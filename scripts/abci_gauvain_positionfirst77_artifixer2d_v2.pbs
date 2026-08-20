@@ -1,0 +1,139 @@
+#!/bin/bash
+#PBS -N gauvain-pf77-a2-v2
+#PBS -l rt_QF=1
+#PBS -l walltime=12:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+: "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
+REPO="$AFROOT/src/ArtiFixer"
+SIF="$AFROOT/models/artifixer-cuda12.sif"
+SOURCE_SCENE_ID=gauvain_joint14_consistent_v1
+SOURCE_SCENE="$AFROOT/data/$SOURCE_SCENE_ID"
+SOURCE_TRANSFORMS="$AFROOT/data/gauvain_colmap_all154_clean/3dgrut_input/gauvain_colmap_all154_clean/nerfstudio/transforms.json"
+RUN_ID=gauvain_positionfirst77_artifixer2d_v2
+RUN_ROOT="$AFROOT/outputs/$RUN_ID"
+MANIFEST_DIR="$RUN_ROOT/manifests"
+INFERENCE_MANIFEST="$MANIFEST_DIR/position_first_manifest.json"
+INFERENCE_ROOT="$RUN_ROOT/inference"
+PANORAMA_WORLD="$RUN_ROOT/panorama_world"
+PANORAMA_SOURCE="$RUN_ROOT/panorama_source/frames"
+RESULTS="$RUN_ROOT/results"
+STATUS_FILE="$RUN_ROOT/status/success.env"
+RIG_MANIFEST="$AFROOT/trajectories/$SOURCE_SCENE_ID/manifest.json"
+RENDER_ROOT="$SOURCE_SCENE/recon_results/$SOURCE_SCENE_ID/reconstruction/$SOURCE_SCENE_ID/ours_30000/trajectory"
+SELECTED_INDICES="$RENDER_ROOT/selected_indices.json"
+LOG="$RUN_ROOT/job.log"
+EXPECTED_TARGETS=2156
+
+test -s "$SOURCE_SCENE/split.json"
+test -s "$SOURCE_TRANSFORMS"
+test -s "$RIG_MANIFEST"
+test -s "$SELECTED_INDICES"
+test "$(find "$RENDER_ROOT/renders" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$EXPECTED_TARGETS"
+test "$(find "$RENDER_ROOT/opacity" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$EXPECTED_TARGETS"
+test -s "$AFROOT/models/artifixer-checkpoint/artifixer-14b.pt"
+test -s "$SIF"
+test ! -e "$RUN_ROOT" || { echo "Refusing to overwrite $RUN_ROOT" >&2; exit 2; }
+mkdir -p "$MANIFEST_DIR" "$RESULTS" "$RUN_ROOT/status"
+
+cd "$REPO"
+python3 scripts/generate_viewmajor_position_first_manifest.py \
+    "$RIG_MANIFEST" "$SELECTED_INDICES" "$INFERENCE_MANIFEST" \
+    --context-views 12 --core-positions 3 --halo-positions 1 \
+    --maximum-item-frames 77
+
+python3 - "$INFERENCE_MANIFEST" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+assert manifest["layout"] == "gauvain_position_first_14view_snake_windows"
+assert manifest["source_target_layout"] == "view_major"
+assert manifest["frame_count"] == 154
+assert manifest["views_per_position"] == 14
+assert manifest["target_count"] == 2156
+assert len(manifest["items"]) == 52
+assert max(len(item["target_indices"]) for item in manifest["items"]) == 70
+assert all(len(item["target_indices"]) % 14 == 0 for item in manifest["items"])
+assert all(group["count"] == 14 for item in manifest["items"] for group in item["position_groups"])
+print("MANIFEST_PASS positions=154 views_per_position=14 items=52 max_item_frames=70")
+PY
+
+export HF_HOME="$AFROOT/cache/huggingface"
+export HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONUNBUFFERED=1
+export NCCL_DEBUG=WARN
+
+nvidia-smi
+singularity exec --nv \
+    --bind "$REPO:/workspace/artifixer" \
+    --bind "$AFROOT:/work" \
+    --env PYTHONPATH=/workspace/artifixer \
+    --env HF_HOME=/work/cache/huggingface \
+    --env HUGGINGFACE_HUB_CACHE=/work/cache/huggingface/hub \
+    --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    --env PYTHONUNBUFFERED=1 \
+    --env NCCL_DEBUG=WARN \
+    "$SIF" bash -lc "cd /workspace/artifixer && torchrun --standalone --nproc_per_node=4 \
+        -m model_eval.run_inference \
+        --evalset reconstructed_colmap \
+        --checkpoint_pt /work/models/artifixer-checkpoint/artifixer-14b.pt \
+        --save_dir /work/outputs/$RUN_ID/inference \
+        --split_path /work/data/$SOURCE_SCENE_ID/split.json \
+        --inference_manifest_path /work/outputs/$RUN_ID/manifests/position_first_manifest.json \
+        --render_trajectory trajectory \
+        --num_views 12 --max_neighbors_per_encode 1 \
+        --inference_pipeline bidirectional --context_parallel_size 4 \
+        --bidirectional_chunk_size 77 --num_inference_steps 4 \
+        --deterministic_noise_seed 20260803 \
+        --save_frame_outputs_only"
+
+PRED_DIR=$(find "$INFERENCE_ROOT" -type d -path '*/frames/batch_0000/pred' -print -quit)
+test -n "$PRED_DIR"
+PREDICTION_COUNT=$(find "$PRED_DIR" -maxdepth 1 -type f -name '*.png' | wc -l)
+test "$PREDICTION_COUNT" -eq "$EXPECTED_TARGETS"
+PRED_DIR_CONTAINER=${PRED_DIR/#$AFROOT/\/work}
+test "$PRED_DIR_CONTAINER" != "$PRED_DIR"
+
+singularity exec \
+    --bind "$REPO:/workspace/artifixer" --bind "$AFROOT:/work" \
+    --env PYTHONPATH=/workspace/artifixer "$SIF" \
+    python /workspace/artifixer/scripts/stitch_artifixer_frustums360.py \
+        --input-dir "$PRED_DIR_CONTAINER" \
+        --manifest /work/trajectories/$SOURCE_SCENE_ID/manifest.json \
+        --output-dir /work/outputs/$RUN_ID/panorama_world \
+        --output-width 1024 --output-height 512 --qc-width 512 \
+        --blend-mode feather --ownership-mode angular --fps 15 --crf 17
+test "$(find "$PANORAMA_WORLD/frames" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 154
+
+singularity exec \
+    --bind "$REPO:/workspace/artifixer" --bind "$AFROOT:/work" \
+    --env PYTHONPATH=/workspace/artifixer "$SIF" \
+    python /workspace/artifixer/scripts/reorient_erp_to_source_camera.py \
+        --input-dir /work/outputs/$RUN_ID/panorama_world/frames \
+        --source-transforms /work/data/gauvain_colmap_all154_clean/3dgrut_input/gauvain_colmap_all154_clean/nerfstudio/transforms.json \
+        --output-dir /work/outputs/$RUN_ID/panorama_source/frames \
+        --reference-frame 0
+test "$(find "$PANORAMA_SOURCE" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 154
+
+FINAL_VIDEO="$RESULTS/gauvain_positionfirst77_artifixer2d_source_aligned_1024x512_15fps.mp4"
+/usr/bin/ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -framerate 15 -start_number 0 -i "$PANORAMA_SOURCE/%05d.png" -frames:v 154 \
+    -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
+    "$FINAL_VIDEO"
+test -s "$FINAL_VIDEO"
+
+{
+    printf 'JOB_ID=%q\n' "${PBS_JOBID:-local}"
+    printf 'RUN_ID=%q\n' "$RUN_ID"
+    printf 'LOG=%q\n' "$LOG"
+    printf 'INFERENCE_MANIFEST=%q\n' "$INFERENCE_MANIFEST"
+    printf 'PREDICTION_COUNT=%q\n' "$PREDICTION_COUNT"
+    printf 'PANORAMA_COUNT=154\n'
+    printf 'FINAL_VIDEO=%q\n' "$FINAL_VIDEO"
+    printf 'ORDER=position_first_14_views_consecutive\n'
+    printf 'INFERENCE_ITEMS=52\nMAX_TARGET_FRAMES_PER_ITEM=70\nCHUNK_LIMIT=77\n'
+    printf 'DISTILLATION=false\nARTIFIXER3D_PLUS=false\n'
+} > "$STATUS_FILE"
+cat "$STATUS_FILE"

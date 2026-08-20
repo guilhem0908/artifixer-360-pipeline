@@ -1,0 +1,121 @@
+#!/bin/bash
+#PBS -N gauvain-snake14-af
+#PBS -l rt_QF=1
+#PBS -l walltime=12:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+: "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
+REPO="$AFROOT/src/ArtiFixer"
+SIF="$AFROOT/models/artifixer-cuda12.sif"
+SCENE_ID=gauvain_wlsnake14_full154_v1
+SCENE="$AFROOT/data/$SCENE_ID"
+SAVE_DIR="$AFROOT/outputs/$SCENE_ID/artifixer"
+STATUS_DIR="$AFROOT/outputs/$SCENE_ID/status"
+CHECKPOINT="$AFROOT/models/artifixer-checkpoint/artifixer-14b.pt"
+INFERENCE_MANIFEST="$SCENE/inference_manifest.json"
+TRAJECTORY_DIR="$AFROOT/trajectories/$SCENE_ID"
+RENDER_DIR="$SCENE/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory"
+VIEW_MAJOR="$SAVE_DIR/view_major"
+HARD_PANO="$SAVE_DIR/panorama_hard"
+FEATHER_PANO="$SAVE_DIR/panorama_feather"
+
+test -s "$STATUS_DIR/preparation_success.env"
+test -s "$SCENE/split.json"
+test -s "$INFERENCE_MANIFEST"
+test -s "$CHECKPOINT"
+test ! -e "$SAVE_DIR" || { echo "Refusing to overwrite existing inference: $SAVE_DIR" >&2; exit 2; }
+mkdir -p "$SAVE_DIR" "$STATUS_DIR"
+
+export HF_HOME="$AFROOT/cache/huggingface"
+export HUGGINGFACE_HUB_CACHE="$HF_HOME/hub"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONUNBUFFERED=1
+export NCCL_DEBUG=WARN
+
+nvidia-smi
+singularity exec --nv \
+    --bind "$REPO:/workspace/artifixer" \
+    --bind "$AFROOT:/work" \
+    --env PYTHONPATH=/workspace/artifixer \
+    --env HF_HOME=/work/cache/huggingface \
+    --env HUGGINGFACE_HUB_CACHE=/work/cache/huggingface/hub \
+    --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    --env PYTHONUNBUFFERED=1 \
+    --env NCCL_DEBUG=WARN \
+    "$SIF" \
+    bash -lc "cd /workspace/artifixer && torchrun --standalone --nproc_per_node=4 \
+        -m model_eval.run_inference \
+        --evalset reconstructed_colmap \
+        --checkpoint_pt /work/models/artifixer-checkpoint/artifixer-14b.pt \
+        --save_dir /work/outputs/$SCENE_ID/artifixer \
+        --split_path /work/data/$SCENE_ID/split.json \
+        --inference_manifest_path /work/data/$SCENE_ID/inference_manifest.json \
+        --render_trajectory trajectory \
+        --num_views 12 --max_neighbors_per_encode 1 \
+        --inference_pipeline bidirectional --context_parallel_size 4 \
+        --bidirectional_chunk_size 77 --save_frame_outputs_only"
+
+test "$(find "$SAVE_DIR" -type f -path '*/pred/*.png' | wc -l)" -eq 2310
+
+set +e
+singularity exec \
+    --bind "$REPO:/workspace/artifixer" --bind "$AFROOT:/work" \
+    --env PYTHONPATH=/workspace/artifixer "$SIF" \
+    python /workspace/artifixer/scripts/evaluate_spherical_snake_turn.py \
+        --trajectory /work/trajectories/$SCENE_ID/snake.json \
+        --snake-manifest /work/trajectories/$SCENE_ID/snake_manifest.json \
+        --render-dir /work/data/$SCENE_ID/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory/renders \
+        --prediction-dir /work/outputs/$SCENE_ID/artifixer \
+        --output /work/outputs/$SCENE_ID/artifixer/snake_turn_qc.json \
+        --max-mae 0.10 --max-p95 0.30 --min-direct-coverage 0.20
+QC_EXIT=$?
+set -e
+
+python3 "$REPO/scripts/extract_spherical_snake_lanes.py" \
+    --prediction-root "$SAVE_DIR" \
+    --snake-manifest "$TRAJECTORY_DIR/snake_manifest.json" \
+    --rig-manifest "$TRAJECTORY_DIR/frustum_rig/manifest.json" \
+    --output-dir "$VIEW_MAJOR"
+test "$(find "$VIEW_MAJOR" -maxdepth 1 -type l -name '*.png' | wc -l)" -eq 2156
+
+singularity exec --bind "$REPO:/workspace/artifixer" --bind "$AFROOT:/work" \
+    --env PYTHONPATH=/workspace/artifixer "$SIF" \
+    python /workspace/artifixer/scripts/stitch_artifixer_frustums360.py \
+        --input-dir /work/outputs/$SCENE_ID/artifixer/view_major \
+        --manifest /work/trajectories/$SCENE_ID/frustum_rig/manifest.json \
+        --output-dir /work/outputs/$SCENE_ID/artifixer/panorama_hard \
+        --output-width 1024 --output-height 512 --qc-width 512 \
+        --blend-mode hard --disable-gains --ownership-mode angular --fps 15 --crf 17
+singularity exec --bind "$REPO:/workspace/artifixer" --bind "$AFROOT:/work" \
+    --env PYTHONPATH=/workspace/artifixer "$SIF" \
+    python /workspace/artifixer/scripts/stitch_artifixer_frustums360.py \
+        --input-dir /work/outputs/$SCENE_ID/artifixer/view_major \
+        --manifest /work/trajectories/$SCENE_ID/frustum_rig/manifest.json \
+        --output-dir /work/outputs/$SCENE_ID/artifixer/panorama_feather \
+        --output-width 1024 --output-height 512 --qc-width 512 \
+        --blend-mode feather --ownership-mode angular --fps 15 --crf 17
+/usr/bin/ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -framerate 15 -start_number 0 -i "$HARD_PANO/frames/%05d.png" -frames:v 154 \
+    -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
+    "$SAVE_DIR/gauvain_snake14_2d_hard_1024x512_15fps.mp4"
+/usr/bin/ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -framerate 15 -start_number 0 -i "$FEATHER_PANO/frames/%05d.png" -frames:v 154 \
+    -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
+    "$SAVE_DIR/gauvain_snake14_2d_feather_1024x512_15fps.mp4"
+test -s "$SAVE_DIR/gauvain_snake14_2d_hard_1024x512_15fps.mp4"
+test -s "$SAVE_DIR/gauvain_snake14_2d_feather_1024x512_15fps.mp4"
+
+QC_VERDICT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' "$SAVE_DIR/snake_turn_qc.json")
+{
+    printf 'JOB_ID=%q\n' "${PBS_JOBID:-local}"
+    printf 'SAVE_DIR=%q\n' "$SAVE_DIR"
+    printf 'HARD_VIDEO=%q\n' "$SAVE_DIR/gauvain_snake14_2d_hard_1024x512_15fps.mp4"
+    printf 'FEATHER_VIDEO=%q\n' "$SAVE_DIR/gauvain_snake14_2d_feather_1024x512_15fps.mp4"
+    printf 'QC_REPORT=%q\n' "$SAVE_DIR/snake_turn_qc.json"
+    printf 'QC_VERDICT=%q\n' "$QC_VERDICT"
+    printf 'PREDICTION_COUNT=2310\nLANE_OUTPUT_COUNT=2156\nINFERENCE_ITEM_COUNT=71\n'
+} > "$STATUS_DIR/inference_result.env"
+cat "$STATUS_DIR/inference_result.env"
+exit "$QC_EXIT"

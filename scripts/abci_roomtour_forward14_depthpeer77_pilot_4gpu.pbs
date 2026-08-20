@@ -1,0 +1,650 @@
+#!/bin/bash
+#PBS -N roomtour-fwd77
+#PBS -l rt_QF=1
+#PBS -l walltime=12:00:00
+#PBS -j oe
+
+# Scene-generic version of the validated Gauvain forward14/depthpeer77 pilot.
+# It first reconstructs the selected room tour with 3DGRUT, then runs two
+# synchronized 77-frame windows over fourteen forward-facing perspective views.
+
+set -euo pipefail
+
+: "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
+REPO=${REPO:-$AFROOT/src/ArtiFixer}
+SCRIPT="$REPO/scripts/abci_roomtour_forward14_depthpeer77_pilot_4gpu.pbs"
+SIF="$AFROOT/models/artifixer-cuda12.sif"
+ARTIFIXER_CHECKPOINT_SHA256=c1a6d31fb849211d4c682a28b40980549cd8f807ee309e7bc0141a336ffcd16b
+HF_CACHE="$AFROOT/cache/huggingface"
+MOGE_CHECKPOINT_SHA256=280741fd09bc3f403ccff9967784c2a391b52d2c0742ae3efdb21d9f90cc1a01
+
+: "${ROOMTOUR_RUN_DIR:?ROOMTOUR_RUN_DIR is required}"
+: "${POSE_CANDIDATE:?POSE_CANDIDATE is required}"
+: "${PIPELINE_SCRIPT_SHA256:?PIPELINE_SCRIPT_SHA256 is required}"
+: "${PBS_LOCALDIR:?PBS_LOCALDIR is required}"
+: "${SOURCE_COUNT:?SOURCE_COUNT is required}"
+test "$SOURCE_COUNT" -eq 117
+
+ROOMTOUR_RUN_DIR=$(realpath -e "$ROOMTOUR_RUN_DIR")
+POSE_CANDIDATE=$(realpath -e "$POSE_CANDIDATE")
+SOURCE_MANIFEST="$ROOMTOUR_RUN_DIR/contracts/source_manifest_v2.json"
+case "$ROOMTOUR_RUN_DIR" in
+    "$AFROOT"/data/room_tour_pipeline_v2/runs/*) ;;
+    *) echo "unsafe run directory: $ROOMTOUR_RUN_DIR" >&2; exit 65 ;;
+esac
+case "$POSE_CANDIDATE" in
+    "$ROOMTOUR_RUN_DIR"/jobs/*/published/candidate.json) ;;
+    *) echo "pose candidate is outside this run: $POSE_CANDIDATE" >&2; exit 65 ;;
+esac
+
+JOB_TOKEN=${PBS_JOBID//[^A-Za-z0-9_.-]/_}
+JOB_DIR="$ROOMTOUR_RUN_DIR/jobs/forward14_depthpeer77/$JOB_TOKEN"
+LOG="$JOB_DIR/job.log"
+STATUS="$JOB_DIR/status.env"
+PUBLISH_STAGE="$JOB_DIR/.publish"
+PUBLISHED="$JOB_DIR/published"
+SCRATCH="$PBS_LOCALDIR/roomtour_forward14_depthpeer77_$JOB_TOKEN"
+RUN_REPO="$SCRATCH/repo"
+ARTIFIXER_CHECKPOINT="$SCRATCH/models/artifixer-checkpoint/artifixer-14b.pt"
+MOGE_CHECKPOINT="$SCRATCH/models/moge-2-vitl-normal/model.pt"
+BASE_ID=${BASE_ID:-roomtour_base117_standard_v1}
+RUN_ID=${RUN_ID:-roomtour_forward14_depthpeer77_pilot_v1}
+SCENE_ID="${RUN_ID}_scene"
+BASE="$SCRATCH/data/$BASE_ID"
+SCENE="$SCRATCH/data/$SCENE_ID"
+WINDOW_DATA="$SCRATCH/data/$RUN_ID"
+RIG="$SCRATCH/trajectory_forward14"
+SOURCE_RENDER="$SCENE/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory"
+SAVE_DIR="$SCRATCH/outputs/$RUN_ID/artifixer"
+RESULTS="$SCRATCH/outputs/$RUN_ID/results"
+BASE_CHECKPOINT="$BASE/3dgrut_runs/$BASE_ID/$BASE_ID/ours_30000/ckpt_30000.pt"
+BASE_CACHE="$ROOMTOUR_RUN_DIR/artifacts/base_3dgrut/$BASE_ID"
+BASE_CACHE_CHECKPOINT="$BASE_CACHE/ckpt_30000.pt"
+BASE_CACHE_SCALE="$BASE_CACHE/scale_info.txt"
+INFERENCE_CONFIG_ID=forward14_s56_span3_w77_s40_steps8_sync075_depth008_v2
+INFERENCE_CACHE="$ROOMTOUR_RUN_DIR/artifacts/synchronized_inference/${RUN_ID}_$INFERENCE_CONFIG_ID"
+CURRENT_STAGE=initialize
+RESULT=NA
+
+mkdir -p "$JOB_DIR" "$SCRATCH"
+test ! -e "$PUBLISH_STAGE"
+test ! -e "$PUBLISHED"
+exec > >(tee -a "$LOG") 2>&1
+
+write_status() {
+    local state=$1
+    local exit_status=$2
+    {
+        printf 'STATE=%s\n' "$state"
+        printf 'ELAPSED_WALLTIME=%s\n' UNKNOWN
+        printf 'EXIT_STATUS=%s\n' "$exit_status"
+        printf 'STAGE=%s\n' "$CURRENT_STAGE"
+        printf 'RESULT=%s\n' "$RESULT"
+        printf 'JOB_ID=%s\n' "$PBS_JOBID"
+        printf 'LOG_PATH=%s\n' "$LOG"
+        printf 'PUBLISHED=%s\n' "$PUBLISHED"
+    } > "$STATUS.tmp"
+    mv "$STATUS.tmp" "$STATUS"
+}
+
+finish() {
+    local code=$?
+    trap - EXIT
+    if test "$code" -eq 0; then
+        CURRENT_STAGE=finished
+        RESULT=PASS_FORWARD14_DEPTHPEER77_PILOT
+        write_status F 0
+    else
+        RESULT=FAILED_FORWARD14_DEPTHPEER77_PILOT
+        mkdir -p "$JOB_DIR/failed"
+        for path in \
+            "$RESULTS/depth_overlap_qc.json" \
+            "$RESULTS/high_confidence_detail_qc.json" \
+            "$RESULTS/temporal_qc.json" \
+            "$SAVE_DIR/synchronization_metadata.json" \
+            "$RIG/manifest.json"; do
+            test ! -s "$path" || cp -p "$path" "$JOB_DIR/failed/"
+        done
+        write_status E "$code"
+    fi
+    exit "$code"
+}
+trap finish EXIT
+write_status R NA
+
+stage() {
+    CURRENT_STAGE=$1
+    write_status R NA
+    echo
+    echo "[$(date -Is)] STAGE=$CURRENT_STAGE"
+}
+
+container_gpu() {
+    singularity exec --nv \
+        --bind "$RUN_REPO:/workspace/artifixer:ro" \
+        --bind "$RUN_REPO/thirdparty/3DGRUT-ArtiFixer:/workspace/thirdparty/3DGRUT-ArtiFixer:ro" \
+        --bind "$SCRATCH:/work" \
+        --bind "$ARTIFIXER_CHECKPOINT:/models/artifixer-14b.pt:ro" \
+        --bind "$HF_CACHE:/hf-cache:ro" \
+        --bind "$MOGE_CHECKPOINT:/models/moge.pt:ro" \
+        --env PYTHONPATH=/workspace/artifixer \
+        --env PYTHONUNBUFFERED=1 \
+        --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+        --env TORCH_HOME=/work/torch_cache \
+        --env TORCH_EXTENSIONS_DIR=/work/torch_extensions \
+        --env ARTIFIXER_INTRINSICS_GPU_CACHE_SIZE=8 \
+        --env HF_HOME=/hf-cache \
+        --env HUGGINGFACE_HUB_CACHE=/hf-cache/hub \
+        --env HF_XET_CACHE=/work/hf_xet_cache \
+        --env MOGE_MODEL_PATH=/models/moge.pt \
+        --env NCCL_DEBUG=WARN \
+        "$SIF" "$@"
+}
+
+container_cpu() {
+    singularity exec \
+        --bind "$RUN_REPO:/workspace/artifixer:ro" \
+        --bind "$RUN_REPO/thirdparty/3DGRUT-ArtiFixer:/workspace/thirdparty/3DGRUT-ArtiFixer:ro" \
+        --bind "$SCRATCH:/work" \
+        --env PYTHONPATH=/workspace/artifixer \
+        --env PYTHONUNBUFFERED=1 \
+        "$SIF" "$@"
+}
+
+encode_video() {
+    local frames_dir=$1
+    local output=$2
+    test "$(find "$frames_dir" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 117
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -framerate 15 -start_number 0 -i "$frames_dir/%05d.png" -frames:v 117 \
+        -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
+        "$output"
+}
+
+stage preflight_standard_pose_candidate_and_dependencies
+test "$(sha256sum "$SCRIPT" | awk '{print $1}')" = "$PIPELINE_SCRIPT_SHA256"
+test -s "$SOURCE_MANIFEST"
+test -s "$SIF"
+test -d "$HF_CACHE"
+command -v singularity
+command -v rsync
+command -v ffmpeg
+command -v ffprobe
+python3 - "$POSE_CANDIDATE" "$SOURCE_MANIFEST" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+candidate_path = Path(sys.argv[1]).resolve()
+manifest_path = Path(sys.argv[2]).resolve()
+manifest = json.loads(manifest_path.read_text())
+if manifest.get("observation_count") != 117:
+    raise SystemExit("source manifest is not the 117-frame pilot")
+candidate = json.loads(candidate_path.read_text())
+if candidate.get("schema") != "artifixer.roomtour_standard_colmap_candidate_v1":
+    raise SystemExit("unexpected standard COLMAP candidate schema")
+if candidate.get("status") != "PASS" or candidate.get("verdict") != "PASS_STANDARD_COLMAP_ALL_FRAMES":
+    raise SystemExit("standard COLMAP candidate is not PASS")
+if candidate.get("registered_images") != 117:
+    raise SystemExit("standard COLMAP candidate did not register all 117 images")
+if candidate.get("all_frames_used_for_geometry") is not True:
+    raise SystemExit("standard COLMAP candidate did not use every frame")
+if candidate.get("custom_holdout_rejection") is not False:
+    raise SystemExit("standard COLMAP candidate applied a custom holdout rejection")
+root = candidate_path.parent.resolve()
+for relative, expected in candidate.get("artifacts", {}).items():
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise SystemExit(f"missing or unsafe candidate artifact: {relative}")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected.get("sha256"):
+        raise SystemExit(f"candidate artifact drifted: {relative}")
+    if path.stat().st_size != expected.get("size_bytes"):
+        raise SystemExit(f"candidate artifact size drifted: {relative}")
+print("standard_pose_candidate=PASS registered_images=117")
+PY
+nvidia-smi
+
+stage materialize_and_hash_pinned_model_assets
+mkdir -p "$(dirname "$ARTIFIXER_CHECKPOINT")" "$(dirname "$MOGE_CHECKPOINT")"
+if test ! -s "$ARTIFIXER_CHECKPOINT"; then
+    singularity exec \
+        --bind "$SCRATCH:/work" \
+        --env HF_HOME=/work/hf-cache \
+        --env HUGGINGFACE_HUB_CACHE=/work/hf-cache/hub \
+        --env HF_HUB_DOWNLOAD_TIMEOUT=600 \
+        "$SIF" python -c 'from huggingface_hub import hf_hub_download; print(hf_hub_download(repo_id="nvidia/ArtiFixer", filename="artifixer-14b.pt", local_dir="/work/models/artifixer-checkpoint"))'
+fi
+if test ! -s "$MOGE_CHECKPOINT"; then
+    singularity exec \
+        --bind "$SCRATCH:/work" \
+        --env HF_HOME=/work/hf-cache \
+        --env HUGGINGFACE_HUB_CACHE=/work/hf-cache/hub \
+        --env HF_HUB_DOWNLOAD_TIMEOUT=600 \
+        "$SIF" python -c 'from huggingface_hub import hf_hub_download; print(hf_hub_download(repo_id="Ruicheng/moge-2-vitl-normal", filename="model.pt", local_dir="/work/models/moge-2-vitl-normal"))'
+fi
+test -s "$ARTIFIXER_CHECKPOINT"
+test -s "$MOGE_CHECKPOINT"
+test "$(sha256sum "$ARTIFIXER_CHECKPOINT" | awk '{print $1}')" = "$ARTIFIXER_CHECKPOINT_SHA256"
+test "$(sha256sum "$MOGE_CHECKPOINT" | awk '{print $1}')" = "$MOGE_CHECKPOINT_SHA256"
+
+stage copy_pose_scene_and_frozen_code_to_node_local_scratch
+rsync -a --exclude=.git --exclude=outputs --exclude=presentations "$REPO/" "$RUN_REPO/"
+test "$(sha256sum "$RUN_REPO/scripts/abci_roomtour_forward14_depthpeer77_pilot_4gpu.pbs" | awk '{print $1}')" = "$PIPELINE_SCRIPT_SHA256"
+mkdir -p "$SCRATCH/input_colmap"
+rsync -a "$(dirname "$POSE_CANDIDATE")/colmap_scene/" "$SCRATCH/input_colmap/"
+find "$SCRATCH/input_colmap/images" -maxdepth 1 -type f -name 'frame_*.png' -printf '%f\n' | sort > "$SCRATCH/all_images.txt"
+test "$(wc -l < "$SCRATCH/all_images.txt")" -eq 117
+
+stage base_3dgrut_30000_all_source_images
+if test -s "$BASE_CACHE_CHECKPOINT" && test -s "$BASE_CACHE_SCALE"; then
+    echo "BASE_CACHE=REUSE path=$BASE_CACHE"
+    container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.prepare_colmap_artifixer_inputs \
+        --colmap_dir /work/input_colmap \
+        --output_root /work/data/$BASE_ID \
+        --selected_image_names_file /work/all_images.txt \
+        --phases prepare --reconstruction_steps 30000 --replace"
+    mkdir -p "$(dirname "$BASE_CHECKPOINT")"
+    cp -p "$BASE_CACHE_CHECKPOINT" "$BASE_CHECKPOINT"
+    CACHED_METRIC_SCALE=$(python3 - "$BASE_CACHE_SCALE" <<'PY'
+import sys
+for line in open(sys.argv[1]):
+    if line.startswith("Scale factor:"):
+        print(float(line.split(":", 1)[1].split()[0]))
+        break
+else:
+    raise SystemExit("cached metric scale is missing")
+PY
+)
+    container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.prepare_colmap_artifixer_inputs \
+        --colmap_dir /work/input_colmap \
+        --output_root /work/data/$BASE_ID \
+        --selected_image_names_file /work/all_images.txt \
+        --phases render,scale \
+        --reconstruction_checkpoint /work/data/$BASE_ID/3dgrut_runs/$BASE_ID/$BASE_ID/ours_30000/ckpt_30000.pt \
+        --reconstruction_steps 30000 --metric_scale $CACHED_METRIC_SCALE --replace"
+else
+    echo "BASE_CACHE=MISS path=$BASE_CACHE"
+    container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.prepare_colmap_artifixer_inputs \
+        --colmap_dir /work/input_colmap \
+        --output_root /work/data/$BASE_ID \
+        --selected_image_names_file /work/all_images.txt \
+        --phases prepare,reconstruct,render,scale \
+        --reconstruction_steps 30000 --replace"
+fi
+test -s "$BASE_CHECKPOINT"
+test -s "$BASE/split.json"
+test -s "$BASE/metric_alignment/scale_info.txt"
+test "$(find "$BASE/recon_results/$BASE_ID/reconstruction/$BASE_ID/ours_30000/renders" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 117
+
+if test ! -e "$BASE_CACHE"; then
+    stage publish_immutable_base_3dgrut_retry_cache
+    BASE_CACHE_STAGE="${BASE_CACHE}.stage-${JOB_TOKEN}"
+    test ! -e "$BASE_CACHE_STAGE"
+    mkdir -p "$BASE_CACHE_STAGE"
+    cp -p "$BASE_CHECKPOINT" "$BASE_CACHE_STAGE/ckpt_30000.pt"
+    cp -p "$BASE/metric_alignment/scale_info.txt" "$BASE_CACHE_STAGE/scale_info.txt"
+    python3 - "$BASE_CACHE_STAGE" "$PBS_JOBID" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+manifest = {
+    "schema": "artifixer.roomtour_base_3dgrut_retry_cache_v1",
+    "status": "PASS",
+    "job_id": sys.argv[2],
+    "step": 30000,
+    "source_image_count": 117,
+    "checkpoint_sha256": hashlib.sha256((root / "ckpt_30000.pt").read_bytes()).hexdigest(),
+    "scale_info_sha256": hashlib.sha256((root / "scale_info.txt").read_bytes()).hexdigest(),
+}
+(root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+PY
+    find "$BASE_CACHE_STAGE" -type f -exec chmod 0444 {} +
+    mkdir -p "$(dirname "$BASE_CACHE")"
+    mv "$BASE_CACHE_STAGE" "$BASE_CACHE"
+fi
+test -s "$BASE_CACHE_CHECKPOINT"
+test -s "$BASE_CACHE_SCALE"
+
+stage scene_generic_caption_embedding_from_official_wan_revision
+mkdir -p "$SCRATCH/models/wan_caption" "$SCRATCH/hf_download_cache" "$SCRATCH/hf_xet_cache"
+container_gpu python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Wan-AI/Wan2.1-T2V-14B-Diffusers', revision='38ec498cb3208fb688890f8cc7e94ede2cbd7f68', local_dir='/work/models/wan_caption', cache_dir='/work/hf_download_cache', allow_patterns=['tokenizer/*','text_encoder/*'])"
+CAPTION='A realistic furnished residential interior shown during a continuous room tour, with natural materials, stable geometry, consistent architectural details, clean straight lines, no people, and coherent lighting.'
+mkdir -p "$BASE/captions/$BASE_ID"
+container_gpu python /workspace/artifixer/scripts/generate_fixed_caption_embedding.py \
+    --caption "$CAPTION" \
+    --output /work/data/$BASE_ID/captions/$BASE_ID/caption.h5 \
+    --model-path /work/models/wan_caption \
+    --device cuda:0
+test -s "$BASE/captions/$BASE_ID/caption.h5"
+
+stage generate_smoothed_forward_facing_14_view_trajectory
+container_cpu python /workspace/artifixer/scripts/generate_forward_facing14_trajectories.py \
+    /work/data/$BASE_ID/3dgrut_input/$BASE_ID/nerfstudio/transforms.json \
+    /work/trajectory_forward14 \
+    --output-frame-count 117 --jump-ratio 5 --smooth-iterations 56 --heading-span 3 \
+    --size 768 --fov-degrees 110
+python3 - "$RIG/manifest.json" <<'PY'
+import json
+import sys
+
+manifest = json.load(open(sys.argv[1]))
+assert manifest["forward_facing"] is True
+assert manifest["frames_per_view"] == 117
+assert manifest["total_frames"] == 1638
+assert manifest["smoothing"]["smoothed_steps"]["maximum_over_median"] <= 1.01
+assert manifest["orientation_metrics"]["forward_dot_median"] >= 0.99
+assert manifest["orientation_metrics"]["forward_dot_minimum"] >= 0.90
+assert manifest["orientation_metrics"]["rotation_step_p95_degrees"] <= 12.0
+assert manifest["orientation_metrics"]["rotation_step_maximum_degrees"] <= 35.0
+PY
+
+stage render_1638_rgb_opacity_and_depth_targets
+mkdir -p "$SCENE/captions/$SCENE_ID" "$RESULTS"
+cp -p "$BASE/captions/$BASE_ID/caption.h5" "$SCENE/captions/$SCENE_ID/caption.h5"
+METRIC_SCALE=$(python3 - "$BASE/metric_alignment/scale_info.txt" <<'PY'
+import sys
+for line in open(sys.argv[1]):
+    if line.startswith("Scale factor:"):
+        print(float(line.split(":", 1)[1].split()[0]))
+        break
+else:
+    raise SystemExit("metric scale is missing")
+PY
+)
+container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.prepare_colmap_artifixer_inputs \
+    --colmap_dir /work/data/$BASE_ID/3dgrut_input/$BASE_ID \
+    --output_root /work/data/$SCENE_ID \
+    --selected_image_names_file /work/data/$BASE_ID/selected_images.txt \
+    --trajectory_path /work/trajectory_forward14/combined.json \
+    --phases prepare,render,scale \
+    --reconstruction_checkpoint /work/data/$BASE_ID/3dgrut_runs/$BASE_ID/$BASE_ID/ours_30000/ckpt_30000.pt \
+    --reconstruction_steps 30000 --metric_scale $METRIC_SCALE --replace"
+test "$(find "$SOURCE_RENDER/renders" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 1638
+test "$(find "$SOURCE_RENDER/opacity" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 1638
+test "$(find "$SOURCE_RENDER/depth" -maxdepth 1 -type f -name '*.npy' | wc -l)" -eq 1638
+
+stage prepare_two_overlapping_depth_synchronized_windows
+container_cpu python /workspace/artifixer/scripts/prepare_depth_synchronized_multiview_windows.py \
+    --source-split "/work/data/$SCENE_ID/split.json" \
+    --rig-manifest /work/trajectory_forward14/manifest.json \
+    --output-root "/work/data/$RUN_ID" --scene-prefix "$RUN_ID" \
+    --frame-start 0 --frame-stop 117 --window-size 77 --window-stride 40
+test "$(find "$WINDOW_DATA/windows" -type l -path '*/renders/*.png' | wc -l)" -eq 2156
+test "$(find "$WINDOW_DATA/windows" -type l -path '*/opacity/*.png' | wc -l)" -eq 2156
+
+stage synchronized_forward14_depthpeer77_inference
+if test -d "$INFERENCE_CACHE"; then
+    python3 - "$INFERENCE_CACHE" "$SOURCE_MANIFEST" "$POSE_CANDIDATE" \
+        "$INFERENCE_CONFIG_ID" "$ARTIFIXER_CHECKPOINT_SHA256" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+manifest = json.loads((root / "manifest.json").read_text())
+sha256 = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+assert manifest["schema"] == "artifixer.synchronized_inference_retry_cache_v1"
+assert manifest["status"] == "PASS"
+assert manifest["source_manifest_sha256"] == sha256(sys.argv[2])
+assert manifest["pose_candidate_sha256"] == sha256(sys.argv[3])
+assert manifest["inference_config_id"] == sys.argv[4]
+assert manifest["artifixer_checkpoint_sha256"] == sys.argv[5]
+assert manifest["prediction_count"] == 1638
+assert len(manifest["files"]) == 1639
+for relative, record in manifest["files"].items():
+    path = root / relative
+    assert path.is_file()
+    assert path.stat().st_size == record["size_bytes"]
+    assert sha256(path) == record["sha256"]
+PY
+    mkdir -p "$SAVE_DIR/merged_predictions"
+    cp -p "$INFERENCE_CACHE/merged_predictions/"*.png "$SAVE_DIR/merged_predictions/"
+    cp -p "$INFERENCE_CACHE/synchronization_metadata.json" "$SAVE_DIR/"
+    echo "INFERENCE_CACHE=REUSE path=$INFERENCE_CACHE"
+else
+    echo "INFERENCE_CACHE=MISS path=$INFERENCE_CACHE"
+    container_gpu bash -lc "cd /workspace/artifixer && torchrun --standalone --nproc_per_node=4 \
+        -m model_eval.run_synchronized_multiview_inference \
+        --evalset reconstructed_colmap \
+        --checkpoint_pt /models/artifixer-14b.pt \
+        --save_dir /work/outputs/$RUN_ID/artifixer \
+        --split_path /work/data/$RUN_ID/split.json \
+        --manifest /work/trajectory_forward14/manifest.json \
+        --window-manifest /work/data/$RUN_ID/window_manifest.json \
+        --depth-dir /work/data/$SCENE_ID/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory/depth \
+        --render_trajectory trajectory \
+        --num_views 12 --max_neighbors_per_encode 1 \
+        --inference_pipeline bidirectional --context_parallel_size 4 \
+        --bidirectional_chunk_size 77 --num_inference_steps 8 \
+        --view-microbatch-size 1 --peer-conditioning \
+        --neighbor-prope-chunk-cameras 16 \
+        --deterministic-overlap-noise --deterministic_noise_seed 0 \
+        --initial-noise-consensus-iterations 3 \
+        --synchronization-target noise_predictions --synchronization-blend 0.75 \
+        --post-step-latent-blend 0.0 \
+        --final-latent-consensus-iterations 0 \
+        --final-low-frequency-consensus-iterations 1 \
+        --final-low-frequency-kernel-size 5 \
+        --minimum-overlap-fraction 0.02 \
+        --depth-relative-tolerance 0.08 \
+        --minimum-depth-overlap-fraction 0.002 \
+        --depth-spatial-valid-fraction 0.5 \
+        --depth-temporal-valid-fraction 0.5 \
+        --required-loop-pair H000:H300"
+fi
+test "$(find "$SAVE_DIR/merged_predictions" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 1638
+python3 - "$SAVE_DIR/synchronization_metadata.json" <<'PY'
+import json
+import sys
+
+metadata = json.load(open(sys.argv[1]))
+assert metadata["window_count"] == 2
+assert metadata["deterministic_overlap_noise"] is True
+assert metadata["deterministic_noise_seed"] == 0
+assert metadata["neighbor_prope_chunk_cameras"] == 16
+assert metadata["window_blending"] == {
+    "method": "pairwise_raised_cosine_rgb_partition_of_unity",
+    "overlap_frame_count": 37,
+    "maximum_window_contributors": 2,
+    "all_window_predictions_retained_until_merge": True,
+}
+first, second = metadata["windows"]
+assert first["original_frame_count"] == second["original_frame_count"] == 77
+assert first["padded_frame_count"] == second["padded_frame_count"] == 77
+assert first["latent_frame_count"] == second["latent_frame_count"] == 20
+assert first["peer_neighbor_count"] == second["peer_neighbor_count"] == 160
+assert first["real_neighbor_count"] == second["real_neighbor_count"] == 12
+assert first["noise_ids"][10:] == second["noise_ids"][:10]
+assert first["source_indices"] == list(range(0, 77))
+assert second["source_indices"] == list(range(40, 117))
+PY
+
+if test ! -e "$INFERENCE_CACHE"; then
+    stage publish_immutable_synchronized_inference_retry_cache
+    INFERENCE_CACHE_STAGE="${INFERENCE_CACHE}.partial-$JOB_TOKEN"
+    test ! -e "$INFERENCE_CACHE_STAGE"
+    mkdir -p "$INFERENCE_CACHE_STAGE/merged_predictions"
+    cp -p "$SAVE_DIR/merged_predictions/"*.png "$INFERENCE_CACHE_STAGE/merged_predictions/"
+    cp -p "$SAVE_DIR/synchronization_metadata.json" "$INFERENCE_CACHE_STAGE/"
+    python3 - "$INFERENCE_CACHE_STAGE" "$SOURCE_MANIFEST" "$POSE_CANDIDATE" \
+        "$INFERENCE_CONFIG_ID" "$ARTIFIXER_CHECKPOINT_SHA256" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+sha256 = lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+files = {}
+for path in sorted(root.rglob("*")):
+    if path.is_file():
+        files[str(path.relative_to(root))] = {
+            "sha256": sha256(path),
+            "size_bytes": path.stat().st_size,
+        }
+prediction_count = len(list((root / "merged_predictions").glob("*.png")))
+assert prediction_count == 1638
+assert len(files) == 1639
+manifest = {
+    "schema": "artifixer.synchronized_inference_retry_cache_v1",
+    "status": "PASS",
+    "source_manifest_sha256": sha256(sys.argv[2]),
+    "pose_candidate_sha256": sha256(sys.argv[3]),
+    "inference_config_id": sys.argv[4],
+    "artifixer_checkpoint_sha256": sys.argv[5],
+    "prediction_count": prediction_count,
+    "files": files,
+}
+(root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+PY
+    find "$INFERENCE_CACHE_STAGE" -type f -exec chmod 0444 {} +
+    mkdir -p "$(dirname "$INFERENCE_CACHE")"
+    mv "$INFERENCE_CACHE_STAGE" "$INFERENCE_CACHE"
+    echo "INFERENCE_CACHE=PUBLISHED path=$INFERENCE_CACHE"
+fi
+
+stage depth_detail_and_temporal_qc
+container_cpu python /workspace/artifixer/scripts/evaluate_depth_synchronized_multiview.py \
+    --manifest /work/trajectory_forward14/manifest.json \
+    --window-manifest "/work/data/$RUN_ID/window_manifest.json" \
+    --input-dir "/work/data/$SCENE_ID/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory/renders" \
+    --prediction-dir "/work/outputs/$RUN_ID/artifixer/merged_predictions" \
+    --depth-dir "/work/data/$SCENE_ID/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory/depth" \
+    --output "/work/outputs/$RUN_ID/results/depth_overlap_qc.json" \
+    --qc-size 256 --depth-relative-tolerance 0.08 \
+    --max-prediction-mae 0.10 --max-prediction-p95 0.50 \
+    --max-prediction-p95-q95 0.30 \
+    --max-regression-ratio 1.15 --regression-slack 0.005 --minimum-coverage 0.002
+container_cpu python /workspace/artifixer/scripts/evaluate_high_confidence_detail.py \
+    --manifest /work/trajectory_forward14/manifest.json \
+    --window-manifest "/work/data/$RUN_ID/window_manifest.json" \
+    --input-dir "/work/data/$SCENE_ID/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory/renders" \
+    --prediction-dir "/work/outputs/$RUN_ID/artifixer/merged_predictions" \
+    --opacity-dir "/work/data/$SCENE_ID/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory/opacity" \
+    --output "/work/outputs/$RUN_ID/results/high_confidence_detail_qc.json" \
+    --size 256 --opacity-threshold 0.90 --minimum-input-gradient 0.03 \
+    --minimum-edge-coverage 0.005 --minimum-strength-ratio 0.45 \
+    --minimum-per-view-strength-ratio 0.35 \
+    --minimum-orientation-cosine 0.75
+
+for variant in input prediction; do
+    if test "$variant" = input; then
+        stitch_input="/work/data/$SCENE_ID/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory/renders"
+    else
+        stitch_input="/work/outputs/$RUN_ID/artifixer/merged_predictions"
+    fi
+    container_cpu python /workspace/artifixer/scripts/stitch_artifixer_frustums360.py \
+        --input-dir "$stitch_input" \
+        --manifest /work/trajectory_forward14/manifest.json \
+        --output-dir "/work/outputs/$RUN_ID/results/panorama_$variant" \
+        --output-width 1024 --output-height 512 --qc-width 512 \
+        --seam-mode central --blend-mode feather
+done
+container_cpu python /workspace/artifixer/scripts/evaluate_temporal_panorama.py \
+    --input-dir "/work/outputs/$RUN_ID/results/panorama_input/frames" \
+    --prediction-dir "/work/outputs/$RUN_ID/results/panorama_prediction/frames" \
+    --output "/work/outputs/$RUN_ID/results/temporal_qc.json" \
+    --output-width 256 --minimum-valid-fraction 0.40 \
+    --maximum-warp-mae 0.10 --maximum-warp-p95 0.30 \
+    --maximum-edge-flicker 0.12 --maximum-regression-ratio 1.25 \
+    --regression-slack 0.01 --required-boundary 58
+
+stage encode_validate_and_publish
+INPUT_VIDEO="$RESULTS/ytb900_forward_input117_1024x512_15fps.mp4"
+FINAL_VIDEO="$RESULTS/ytb900_forward_depthpeer77_117_1024x512_15fps.mp4"
+COMPARE_VIDEO="$RESULTS/ytb900_forward_input_vs_depthpeer77_2048x512_15fps.mp4"
+encode_video "$RESULTS/panorama_input/frames" "$INPUT_VIDEO"
+encode_video "$RESULTS/panorama_prediction/frames" "$FINAL_VIDEO"
+ffmpeg -nostdin -hide_banner -loglevel error -y -i "$INPUT_VIDEO" -i "$FINAL_VIDEO" \
+    -filter_complex '[0:v][1:v]hstack=inputs=2[v]' -map '[v]' -frames:v 117 \
+    -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart "$COMPARE_VIDEO"
+for report in depth_overlap_qc high_confidence_detail_qc temporal_qc; do
+    test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' "$RESULTS/$report.json")" = PASS
+done
+python3 - "$INPUT_VIDEO" "$FINAL_VIDEO" "$COMPARE_VIDEO" <<'PY'
+import json
+import subprocess
+import sys
+
+for index, path in enumerate(sys.argv[1:]):
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height,avg_frame_rate,nb_read_frames", "-of", "json", path],
+        check=True, capture_output=True, text=True,
+    )
+    stream = json.loads(result.stdout)["streams"][0]
+    assert int(stream["width"]) == (2048 if index == 2 else 1024)
+    assert int(stream["height"]) == 512
+    assert stream["avg_frame_rate"] == "15/1"
+    assert int(stream["nb_read_frames"]) == 117
+PY
+
+mkdir -p "$PUBLISH_STAGE/videos" "$PUBLISH_STAGE/frames/input" \
+    "$PUBLISH_STAGE/frames/prediction" "$PUBLISH_STAGE/qc" \
+    "$PUBLISH_STAGE/manifests" "$PUBLISH_STAGE/checkpoints"
+cp -p "$INPUT_VIDEO" "$FINAL_VIDEO" "$COMPARE_VIDEO" "$PUBLISH_STAGE/videos/"
+cp -p "$RESULTS/panorama_input/frames/"*.png "$PUBLISH_STAGE/frames/input/"
+cp -p "$RESULTS/panorama_prediction/frames/"*.png "$PUBLISH_STAGE/frames/prediction/"
+cp -p "$RESULTS/depth_overlap_qc.json" "$RESULTS/high_confidence_detail_qc.json" \
+    "$RESULTS/temporal_qc.json" "$PUBLISH_STAGE/qc/"
+cp -p "$SAVE_DIR/synchronization_metadata.json" "$PUBLISH_STAGE/manifests/"
+cp -p "$RIG/manifest.json" "$WINDOW_DATA/window_manifest.json" "$PUBLISH_STAGE/manifests/"
+cp -p "$BASE/metric_alignment/scale_info.txt" "$PUBLISH_STAGE/manifests/"
+cp -p "$SOURCE_MANIFEST" "$PUBLISH_STAGE/manifests/source_manifest_v2.json"
+cp -p "$POSE_CANDIDATE" "$PUBLISH_STAGE/manifests/pose_candidate.json"
+ln "$BASE_CACHE_CHECKPOINT" "$PUBLISH_STAGE/checkpoints/base_3dgrut_30000.pt"
+POSE_CANDIDATE_SHA256=$(sha256sum "$POSE_CANDIDATE" | awk '{print $1}')
+python3 - "$PUBLISH_STAGE" "$PBS_JOBID" "$POSE_CANDIDATE_SHA256" "$PIPELINE_SCRIPT_SHA256" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+files = {}
+for path in sorted(root.rglob("*")):
+    if path.is_file():
+        files[str(path.relative_to(root))] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size,
+        }
+result = {
+    "schema": "artifixer.roomtour_forward14_depthpeer77_pilot_v1",
+    "status": "PASS",
+    "verdict": "PASS_FORWARD14_DEPTHPEER77_PILOT",
+    "job_id": sys.argv[2],
+    "pose_candidate_sha256": sys.argv[3],
+    "pipeline_script_sha256": sys.argv[4],
+    "source_image_count": 117,
+    "base_3dgrut_step": 30000,
+    "trajectory_smooth_iterations": 56,
+    "view_count": 14,
+    "window_size": 77,
+    "window_stride": 40,
+    "window_count": 2,
+    "peer_feature_frames": 260,
+    "real_feature_frames": 12,
+    "deterministic_overlap_noise": True,
+    "depth_synchronized": True,
+    "required_loop_pair": "H000:H300",
+    "erp": {"width": 1024, "height": 512, "frames": 117, "fps": 15},
+    "files": files,
+}
+(root / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+PY
+(
+    cd "$PUBLISH_STAGE"
+    find . -type f ! -name sha256sums.txt -print0 | sort -z | xargs -0 sha256sum > sha256sums.txt
+)
+find "$PUBLISH_STAGE" -type f -exec chmod 0444 {} +
+mv "$PUBLISH_STAGE" "$PUBLISHED"
+RESULT=PASS_FORWARD14_DEPTHPEER77_PILOT
+write_status R NA
+echo "FORWARD14_DEPTHPEER77_RESULT=$PUBLISHED/result.json"
+echo "FINAL_ERP_VIDEO=$PUBLISHED/videos/$(basename "$FINAL_VIDEO")"
+echo "COMPARISON_VIDEO=$PUBLISHED/videos/$(basename "$COMPARE_VIDEO")"

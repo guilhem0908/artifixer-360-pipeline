@@ -1,0 +1,186 @@
+#!/bin/bash
+#PBS -N bearlake-colmap-prod
+#PBS -l rt_QG=1
+#PBS -l walltime=06:00:00
+#PBS -j oe
+
+set -euo pipefail
+source /etc/profile.d/modules.sh
+module load python/3.11/3.11.14
+
+: "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
+REPO="$AFROOT/src/ArtiFixer"
+DRIVER="$REPO/scripts/run_roomtour_standard_colmap.py"
+COLMAP_SIF="$AFROOT/models/colmap-4.1.1-a0d785f.sif"
+COLMAP_PYTHON="$AFROOT/venvs/gauvain-colmap411/bin/python"
+CUDNN_LIB_DIR=/apps/cudnn/9.8.0/cuda12.6/lib
+
+: "${ROOMTOUR_RUN_DIR:?ROOMTOUR_RUN_DIR is required}"
+: "${DRIVER_SHA256:?DRIVER_SHA256 is required}"
+: "${SOURCE_MANIFEST_SHA256:?SOURCE_MANIFEST_SHA256 is required}"
+: "${PBS_LOCALDIR:?PBS_LOCALDIR is required}"
+
+ROOMTOUR_RUN_DIR=$(realpath -e "$ROOMTOUR_RUN_DIR")
+SOURCE_MANIFEST="$ROOMTOUR_RUN_DIR/contracts/source_manifest_v2.json"
+IMAGES="$ROOMTOUR_RUN_DIR/inputs/colmap_images"
+SOURCE_COUNT=$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["observation_count"]))' "$SOURCE_MANIFEST")
+test "$SOURCE_COUNT" -ge 2
+case "$ROOMTOUR_RUN_DIR" in
+    "$AFROOT"/data/room_tour_pipeline_v2/runs/*) ;;
+    *) echo "unsafe run directory: $ROOMTOUR_RUN_DIR" >&2; exit 65 ;;
+esac
+
+JOB_TOKEN=${PBS_JOBID//[^A-Za-z0-9_.-]/_}
+JOB_DIR="$ROOMTOUR_RUN_DIR/jobs/pose_standard/$JOB_TOKEN"
+SCRATCH="$PBS_LOCALDIR/roomtour_standard_colmap_$JOB_TOKEN"
+LOG="$JOB_DIR/job.log"
+STATUS="$JOB_DIR/status.env"
+PUBLISH_STAGE="$JOB_DIR/.publish"
+PUBLISHED="$JOB_DIR/published"
+CURRENT_STAGE=initialize
+RESULT=NA
+mkdir -p "$JOB_DIR" "$SCRATCH"
+exec > >(tee -a "$LOG") 2>&1
+
+write_status() {
+    local state=$1
+    local exit_status=$2
+    {
+        printf 'STATE=%s\n' "$state"
+        printf 'ELAPSED_WALLTIME=%s\n' UNKNOWN
+        printf 'EXIT_STATUS=%s\n' "$exit_status"
+        printf 'STAGE=%s\n' "$CURRENT_STAGE"
+        printf 'RESULT=%s\n' "$RESULT"
+        printf 'JOB_ID=%s\n' "$PBS_JOBID"
+        printf 'LOG_PATH=%s\n' "$LOG"
+        printf 'PUBLISHED=%s\n' "$PUBLISHED"
+    } > "$STATUS.tmp"
+    mv "$STATUS.tmp" "$STATUS"
+}
+
+finish() {
+    local code=$?
+    trap - EXIT
+    if test "$code" -eq 0; then
+        CURRENT_STAGE=finished
+        RESULT=PASS_STANDARD_COLMAP_ALL_FRAMES
+        write_status F 0
+    else
+        RESULT=FAILED_STANDARD_COLMAP
+        mkdir -p "$JOB_DIR/failed"
+        for file in metrics.json poses.json temporal_matches.json colmap_commands.jsonl; do
+            test ! -f "$SCRATCH/output/$file" || cp -p "$SCRATCH/output/$file" "$JOB_DIR/failed/$file"
+        done
+        write_status E "$code"
+    fi
+    exit "$code"
+}
+trap finish EXIT
+write_status R NA
+
+stage() {
+    CURRENT_STAGE=$1
+    write_status R NA
+    echo
+    echo "[$(date -Is)] STAGE=$CURRENT_STAGE"
+}
+
+stage preflight_source_and_colmap_411
+test "$(sha256sum "$DRIVER" | awk '{print $1}')" = "$DRIVER_SHA256"
+test "$(sha256sum "$SOURCE_MANIFEST" | awk '{print $1}')" = "$SOURCE_MANIFEST_SHA256"
+test "$(sha256sum "$COLMAP_SIF" | awk '{print $1}')" = eeb2d997f811208f5098c961ccf18e41b6cc46c2f195159a67db4a63991b38aa
+test "$(sha256sum "$CUDNN_LIB_DIR/libcudnn.so.9.8.0" | awk '{print $1}')" = 72f74476dcdc074b9d56f8c5cf576ceff6a595989832b9b0798478dc48a4ffcd
+test -x "$COLMAP_PYTHON"
+test "$(find "$IMAGES" -maxdepth 1 -type f -name 'frame_*.png' -printf x | wc -c)" -eq "$SOURCE_COUNT"
+"$COLMAP_PYTHON" -c 'import numpy,pycolmap; assert pycolmap.__version__ == "4.1.1"'
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+nvidia-smi
+
+stage copy_all_source_frames_to_node_local_scratch
+cp -a "$IMAGES" "$SCRATCH/images"
+cp -p "$SOURCE_MANIFEST" "$SCRATCH/source_manifest_v2.json"
+
+stage all_frame_aliked_lightglue_exhaustive_incremental_sfm
+"$COLMAP_PYTHON" "$DRIVER" \
+    --images-dir "$SCRATCH/images" \
+    --source-manifest "$SCRATCH/source_manifest_v2.json" \
+    --output-dir "$SCRATCH/output" \
+    --matching-mode exhaustive \
+    --colmap-container "$COLMAP_SIF" \
+    --colmap-bind "$SCRATCH" \
+    --colmap-cudnn-dir "$CUDNN_LIB_DIR"
+
+stage verify_standard_colmap_output
+python3 - "$SCRATCH/output/metrics.json" "$SOURCE_COUNT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+metrics = json.loads(Path(sys.argv[1]).read_text())
+if metrics.get("status") != "PASS":
+    raise SystemExit("standard COLMAP metrics are not PASS")
+if metrics.get("verdict") != "PASS_STANDARD_COLMAP_ALL_FRAMES":
+    raise SystemExit("standard COLMAP verdict drifted")
+if metrics.get("registered_images") != int(sys.argv[2]):
+    raise SystemExit("standard COLMAP did not register every source frame")
+if metrics.get("shared_camera") is not True:
+    raise SystemExit("standard COLMAP did not retain one shared camera")
+if metrics.get("output_contract", {}).get("custom_holdout_rejection") is not False:
+    raise SystemExit("unexpected holdout rejection in production reconstruction")
+PY
+for name in cameras.bin images.bin points3D.bin; do
+    test -s "$SCRATCH/output/final_sparse/$name"
+done
+
+stage publish_colmap_scene_and_diagnostics
+mkdir -p "$PUBLISH_STAGE/colmap_scene/images" "$PUBLISH_STAGE/colmap_scene/sparse/0"
+cp -al "$IMAGES/." "$PUBLISH_STAGE/colmap_scene/images/"
+cp -p "$SCRATCH/output/final_sparse/"* "$PUBLISH_STAGE/colmap_scene/sparse/0/"
+for file in metrics.json poses.json temporal_matches.json colmap_commands.jsonl; do
+    cp -p "$SCRATCH/output/$file" "$PUBLISH_STAGE/$file"
+done
+cp -p "$SOURCE_MANIFEST" "$PUBLISH_STAGE/source_manifest_v2.json"
+python3 - "$PUBLISH_STAGE" "$SOURCE_MANIFEST_SHA256" "$SOURCE_COUNT" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+artifacts = {}
+for path in sorted(root.rglob("*")):
+    if path.is_file() and not path.is_symlink():
+        relative = str(path.relative_to(root))
+        artifacts[relative] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size,
+        }
+candidate = {
+    "schema": "artifixer.roomtour_standard_colmap_candidate_v1",
+    "schema_version": 1,
+    "status": "PASS",
+    "verdict": "PASS_STANDARD_COLMAP_ALL_FRAMES",
+    "registered_images": int(sys.argv[3]),
+    "source_manifest_sha256": sys.argv[2],
+    "colmap_scene": "colmap_scene",
+    "all_frames_used_for_geometry": True,
+    "custom_holdout_rejection": False,
+    "artifacts": artifacts,
+    "authorization": {
+        "prepare_colmap_artifixer_inputs": True,
+        "standard_3dgrut": True,
+        "artifixer": True,
+        "artifixer3d": True,
+        "panorama_render": True,
+    },
+}
+(root / "candidate.json").write_text(
+    json.dumps(candidate, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+test -s "$PUBLISH_STAGE/candidate.json"
+find "$PUBLISH_STAGE" -path "$PUBLISH_STAGE/colmap_scene/images" -prune -o -type f -exec chmod 0444 {} +
+mv "$PUBLISH_STAGE" "$PUBLISHED"
+RESULT=PASS_STANDARD_COLMAP_ALL_FRAMES
+write_status R NA
+echo "STANDARD_COLMAP_CANDIDATE=$PUBLISHED/candidate.json"

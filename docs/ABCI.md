@@ -1,7 +1,7 @@
 # ABCI execution
 
-The code is cluster-agnostic. ABCI-specific queue names, group IDs, usernames
-and storage roots are deliberately excluded from the public repository.
+The code keeps ABCI resource classes where they are part of a validated
+protocol. Group IDs, usernames and storage roots are deliberately excluded.
 
 ## Four-GPU launch
 
@@ -40,5 +40,15 @@ A local PBS wrapper should:
 6. write one log and one status file per run;
 7. verify frame counts and QC reports before encoding an MP4.
 
-No public script assumes a particular ABCI allocation. Set the queue,
-`group_list`, wall time and absolute paths in your private submission wrapper.
+The operational wrappers in `scripts/abci_roomtour_*.pbs` and the two
+`scripts/abci_*spherical_snake14*.pbs` files require `AFROOT` at submission
+time. Add your own queue or `group_list` directive in a private wrapper if the
+ABCI project requires it; do not commit allocation details.
+
+Before submission, run:
+
+```bash
+python scripts/check_artifixer_abci_handover.py --afroot "$AFROOT"
+```
+
+The audit is fail-closed and a PASS must still be followed by a GPU smoke test.

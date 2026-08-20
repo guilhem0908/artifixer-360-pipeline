@@ -142,6 +142,8 @@ The exact commands, expected files and validation gates are in:
 - [ABCI execution](docs/ABCI.md) — portable PBS template and four-GPU launch.
 - [Handover guide](docs/HANDOVER.md) — installation, smoke test, data contract,
   expected outputs and troubleshooting.
+- [Dated ABCI handover](docs/artifixer_abci_handover_2026-08-20.md) — exact
+  validated run, runtime pins, off-trajectory findings and recovery status.
 
 Start from the portable variable template:
 

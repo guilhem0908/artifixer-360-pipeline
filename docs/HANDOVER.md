@@ -2,6 +2,10 @@
 
 This guide is intended for a new researcher taking over the framework.
 
+The dated, experiment-level record with the operational 117-frame protocol,
+ABCI runtime hashes, VEnhancer post-processing, failure modes and off-trajectory
+results is [artifixer_abci_handover_2026-08-20.md](artifixer_abci_handover_2026-08-20.md).
+
 ## 1. Clone and validate
 
 ```bash
@@ -100,3 +104,11 @@ only technical. It does not authorize a full run unless:
 5. Show the geometry-lock audit and depth-overlap report.
 6. Stitch perspective views to ERP.
 7. Reproduce one metric table from JSON, not from screenshots.
+
+## 9. Included operational programs
+
+The repository also includes the fail-closed ABCI preflight, the all-frame
+COLMAP driver, the validated 117-frame synchronized pilot, the complete snake
+job pair, the position-first comparison and the VEnhancer yaw-ensemble helper.
+The PBS files deliberately require `AFROOT` and do not contain a username,
+allocation or group ID.

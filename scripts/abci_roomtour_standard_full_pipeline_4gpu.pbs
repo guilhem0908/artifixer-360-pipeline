@@ -1,0 +1,674 @@
+#!/bin/bash
+#PBS -N bearlake-full-360
+#PBS -l rt_QF=1
+#PBS -l walltime=12:00:00
+#PBS -j oe
+
+# Run the complete room-tour pipeline from one ordinary all-images COLMAP
+# reconstruction.  Heavy intermediates stay under PBS_LOCALDIR; only the
+# checkpoints, QC reports, ERP frames, and videos are copied back atomically.
+
+set -euo pipefail
+
+: "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
+REPO=${REPO:-$AFROOT/src/ArtiFixer}
+SCRIPT="$REPO/scripts/abci_roomtour_standard_full_pipeline_4gpu.pbs"
+SIF="$AFROOT/models/artifixer-cuda12.sif"
+ARTIFIXER_CHECKPOINT="$AFROOT/models/artifixer-checkpoint/artifixer-14b.pt"
+HF_CACHE="$AFROOT/cache/huggingface"
+MOGE_CHECKPOINT=${MOGE_CHECKPOINT:-$AFROOT/models/moge-2-vitl-normal/model.pt}
+
+: "${ROOMTOUR_RUN_DIR:?ROOMTOUR_RUN_DIR is required}"
+: "${POSE_CANDIDATE:?POSE_CANDIDATE is required}"
+: "${POSE_CANDIDATE_SHA256:?POSE_CANDIDATE_SHA256 is required}"
+: "${PIPELINE_SCRIPT_SHA256:?PIPELINE_SCRIPT_SHA256 is required}"
+: "${REORIENT_SCRIPT_SHA256:?REORIENT_SCRIPT_SHA256 is required}"
+: "${PBS_LOCALDIR:?PBS_LOCALDIR is required}"
+: "${SOURCE_COUNT:?SOURCE_COUNT is required}"
+case "$SOURCE_COUNT" in
+    ''|*[!0-9]*) echo "SOURCE_COUNT must be an integer: $SOURCE_COUNT" >&2; exit 64 ;;
+esac
+test "$SOURCE_COUNT" -ge 2
+
+ROOMTOUR_RUN_DIR=$(realpath -e "$ROOMTOUR_RUN_DIR")
+POSE_CANDIDATE=$(realpath -e "$POSE_CANDIDATE")
+SOURCE_MANIFEST="$ROOMTOUR_RUN_DIR/contracts/source_manifest_v2.json"
+case "$ROOMTOUR_RUN_DIR" in
+    "$AFROOT"/data/room_tour_pipeline_v2/runs/*) ;;
+    *) echo "unsafe run directory: $ROOMTOUR_RUN_DIR" >&2; exit 65 ;;
+esac
+case "$POSE_CANDIDATE" in
+    "$ROOMTOUR_RUN_DIR"/jobs/*/published/candidate.json) ;;
+    *) echo "pose candidate is outside this run: $POSE_CANDIDATE" >&2; exit 65 ;;
+esac
+
+JOB_TOKEN=${PBS_JOBID//[^A-Za-z0-9_.-]/_}
+JOB_DIR="$ROOMTOUR_RUN_DIR/jobs/full_pipeline/$JOB_TOKEN"
+LOG="$JOB_DIR/job.log"
+STATUS="$JOB_DIR/status.env"
+PUBLISH_STAGE="$JOB_DIR/.publish"
+PUBLISHED="$JOB_DIR/published"
+SCRATCH="$PBS_LOCALDIR/roomtour_full_$JOB_TOKEN"
+RUN_REPO="$SCRATCH/repo"
+BASE_ID=${BASE_ID:-bearlake_base${SOURCE_COUNT}_dense_standard_v2}
+SNAKE_ID=${SNAKE_ID:-bearlake_snake14_${SOURCE_COUNT}_dense_standard_v2}
+RIG_TARGET_COUNT=$((14 * SOURCE_COUNT))
+SNAKE_TURN_COUNT=154
+SNAKE_TARGET_COUNT=$((RIG_TARGET_COUNT + SNAKE_TURN_COUNT))
+BASE="$SCRATCH/data/$BASE_ID"
+SNAKE="$SCRATCH/data/$SNAKE_ID"
+TRAJECTORY_DIR="$SCRATCH/trajectories/$SNAKE_ID"
+SNAKE_TRAJECTORY="$TRAJECTORY_DIR/snake.json"
+SNAKE_MANIFEST="$TRAJECTORY_DIR/snake_manifest.json"
+RIG_DIR="$TRAJECTORY_DIR/frustum_rig"
+INFERENCE_MANIFEST="$SNAKE/inference_manifest.json"
+BASE_CHECKPOINT="$BASE/3dgrut_runs/$BASE_ID/$BASE_ID/ours_30000/ckpt_30000.pt"
+SNAKE_RENDER="$SNAKE/recon_results/$SNAKE_ID/reconstruction/$SNAKE_ID/ours_30000/trajectory"
+AF2D="$SCRATCH/outputs/$SNAKE_ID/artifixer2d"
+DISTILL="$SNAKE/distill_locked35k"
+DISTILLED_CHECKPOINT="$DISTILL/runs/$SNAKE_ID/$SNAKE_ID/ours_35000/ckpt_35000.pt"
+DISTILLED_SNAKE_RENDER="$DISTILL/recon_results/$SNAKE_ID/artifixer3d/$SNAKE_ID/ours_35000/snake"
+DISTILLED_RIG_RENDER="$DISTILL/recon_results/$SNAKE_ID/artifixer3d/$SNAKE_ID/ours_35000/combined"
+AFPLUS="$SCRATCH/outputs/$SNAKE_ID/artifixer3d_plus"
+CURRENT_STAGE=initialize
+RESULT=NA
+
+mkdir -p "$JOB_DIR" "$SCRATCH"
+test ! -e "$PUBLISH_STAGE"
+test ! -e "$PUBLISHED"
+exec > >(tee -a "$LOG") 2>&1
+
+write_status() {
+    local state=$1
+    local exit_status=$2
+    {
+        printf 'STATE=%s\n' "$state"
+        printf 'ELAPSED_WALLTIME=%s\n' UNKNOWN
+        printf 'EXIT_STATUS=%s\n' "$exit_status"
+        printf 'STAGE=%s\n' "$CURRENT_STAGE"
+        printf 'RESULT=%s\n' "$RESULT"
+        printf 'JOB_ID=%s\n' "$PBS_JOBID"
+        printf 'LOG_PATH=%s\n' "$LOG"
+        printf 'PUBLISHED=%s\n' "$PUBLISHED"
+    } > "$STATUS.tmp"
+    mv "$STATUS.tmp" "$STATUS"
+}
+
+finish() {
+    local code=$?
+    trap - EXIT
+    if test "$code" -eq 0; then
+        CURRENT_STAGE=finished
+        RESULT=PASS_FULL_ROOMTOUR_360
+        write_status F 0
+    else
+        RESULT=FAILED_FULL_ROOMTOUR_360
+        write_status E "$code"
+    fi
+    exit "$code"
+}
+trap finish EXIT
+write_status R NA
+
+stage() {
+    CURRENT_STAGE=$1
+    write_status R NA
+    echo
+    echo "[$(date -Is)] STAGE=$CURRENT_STAGE"
+}
+
+container_gpu() {
+    singularity exec --nv \
+        --bind "$RUN_REPO:/workspace/artifixer:ro" \
+        --bind "$RUN_REPO/thirdparty/3DGRUT-ArtiFixer:/workspace/thirdparty/3DGRUT-ArtiFixer:ro" \
+        --bind "$SCRATCH:/work" \
+        --bind "$ARTIFIXER_CHECKPOINT:/models/artifixer-14b.pt:ro" \
+        --bind "$HF_CACHE:/hf-cache:ro" \
+        --bind "$MOGE_CHECKPOINT:/models/moge.pt:ro" \
+        --env PYTHONPATH=/workspace/artifixer \
+        --env PYTHONUNBUFFERED=1 \
+        --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+        --env ARTIFIXER_INTRINSICS_GPU_CACHE_SIZE=8 \
+        --env HF_HOME=/hf-cache \
+        --env HUGGINGFACE_HUB_CACHE=/hf-cache/hub \
+        --env HF_XET_CACHE=/work/hf_xet_cache \
+        --env MOGE_MODEL_PATH=/models/moge.pt \
+        "$SIF" "$@"
+}
+
+container_cpu() {
+    singularity exec \
+        --bind "$RUN_REPO:/workspace/artifixer:ro" \
+        --bind "$RUN_REPO/thirdparty/3DGRUT-ArtiFixer:/workspace/thirdparty/3DGRUT-ArtiFixer:ro" \
+        --bind "$SCRATCH:/work" \
+        --env PYTHONPATH=/workspace/artifixer \
+        --env PYTHONUNBUFFERED=1 \
+        "$SIF" "$@"
+}
+
+qc_snake_nonblocking() {
+    local render_dir=$1
+    local prediction_dir=$2
+    local output=$3
+    local label=$4
+    set +e
+    container_cpu python /workspace/artifixer/scripts/evaluate_spherical_snake_turn.py \
+        --trajectory /work/trajectories/$SNAKE_ID/snake.json \
+        --snake-manifest /work/trajectories/$SNAKE_ID/snake_manifest.json \
+        --render-dir "$render_dir" \
+        --prediction-dir "$prediction_dir" \
+        --output "$output" \
+        --max-mae 0.10 --max-p95 0.30 --min-direct-coverage 0.20
+    local code=$?
+    set -e
+    printf '%s_QC_EXIT=%s\n' "$label" "$code" | tee -a "$SCRATCH/qc_exit_codes.env"
+}
+
+encode_erp_video() {
+    local frames_dir=$1
+    local output=$2
+    test "$(find "$frames_dir" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$SOURCE_COUNT"
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -framerate 15 -start_number 0 -i "$frames_dir/%05d.png" -frames:v "$SOURCE_COUNT" \
+        -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
+        "$output"
+}
+
+stage preflight_standard_pose_candidate_and_dependencies
+test "$(sha256sum "$SCRIPT" | awk '{print $1}')" = "$PIPELINE_SCRIPT_SHA256"
+test "$(sha256sum "$REPO/scripts/reorient_erp_to_source_camera.py" | awk '{print $1}')" = "$REORIENT_SCRIPT_SHA256"
+test "$(sha256sum "$POSE_CANDIDATE" | awk '{print $1}')" = "$POSE_CANDIDATE_SHA256"
+test -s "$SOURCE_MANIFEST"
+test -s "$SIF"
+test -s "$ARTIFIXER_CHECKPOINT"
+test -d "$HF_CACHE"
+test -s "$MOGE_CHECKPOINT"
+command -v singularity
+command -v rsync
+command -v ffmpeg
+command -v ffprobe
+python3 - "$POSE_CANDIDATE" "$SOURCE_COUNT" "$SOURCE_MANIFEST" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+candidate_path = Path(sys.argv[1]).resolve()
+expected_count = int(sys.argv[2])
+source_manifest = json.loads(Path(sys.argv[3]).read_text())
+if int(source_manifest.get("observation_count", -1)) != expected_count:
+    raise SystemExit("source manifest count does not match SOURCE_COUNT")
+root = candidate_path.parent.resolve()
+candidate = json.loads(candidate_path.read_text())
+if candidate.get("schema") != "artifixer.roomtour_standard_colmap_candidate_v1":
+    raise SystemExit("unexpected standard COLMAP candidate schema")
+if candidate.get("status") != "PASS":
+    raise SystemExit("standard COLMAP candidate is not PASS")
+if candidate.get("verdict") != "PASS_STANDARD_COLMAP_ALL_FRAMES":
+    raise SystemExit("standard COLMAP candidate verdict drifted")
+if int(candidate.get("registered_images", -1)) != expected_count:
+    raise SystemExit(f"standard COLMAP candidate did not register all {expected_count} images")
+if candidate.get("all_frames_used_for_geometry") is not True:
+    raise SystemExit("standard COLMAP candidate did not use every frame for geometry")
+if candidate.get("custom_holdout_rejection") is not False:
+    raise SystemExit("standard COLMAP candidate unexpectedly applied a custom holdout rejection")
+scene = root / "colmap_scene"
+for name in ("cameras.bin", "images.bin", "points3D.bin"):
+    if not (scene / "sparse" / "0" / name).is_file():
+        raise SystemExit(f"missing COLMAP artifact: {name}")
+images = sorted((scene / "images").glob("frame_*.png"))
+if len(images) != expected_count:
+    raise SystemExit(f"expected {expected_count} source images, found {len(images)}")
+artifacts = candidate.get("artifacts", {})
+if artifacts:
+    for relative, expected in artifacts.items():
+        path = (root / relative).resolve()
+        if not path.is_relative_to(root):
+            raise SystemExit(f"candidate artifact escapes root: {relative}")
+        if not path.is_file():
+            raise SystemExit(f"candidate artifact is missing: {relative}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != expected.get("sha256") or path.stat().st_size != expected.get("size_bytes"):
+            raise SystemExit(f"candidate artifact drifted: {relative}")
+print(f"standard_pose_candidate=PASS registered_images={expected_count}")
+PY
+nvidia-smi
+
+stage copy_pose_scene_and_frozen_code_to_node_local_scratch
+rsync -a --exclude=.git --exclude=outputs --exclude=presentations "$REPO/" "$RUN_REPO/"
+test "$(sha256sum "$RUN_REPO/scripts/abci_roomtour_standard_full_pipeline_4gpu.pbs" | awk '{print $1}')" = "$PIPELINE_SCRIPT_SHA256"
+test "$(sha256sum "$RUN_REPO/scripts/reorient_erp_to_source_camera.py" | awk '{print $1}')" = "$REORIENT_SCRIPT_SHA256"
+mkdir -p "$SCRATCH/input_colmap"
+rsync -a "$(dirname "$POSE_CANDIDATE")/colmap_scene/" "$SCRATCH/input_colmap/"
+find "$SCRATCH/input_colmap/images" -maxdepth 1 -type f -name 'frame_*.png' -printf '%f\n' | sort > "$SCRATCH/all_images.txt"
+test "$(wc -l < "$SCRATCH/all_images.txt")" -eq "$SOURCE_COUNT"
+
+stage base_3dgrut_30000_all_source_images
+container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.prepare_colmap_artifixer_inputs \
+    --colmap_dir /work/input_colmap \
+    --output_root /work/data/$BASE_ID \
+    --selected_image_names_file /work/all_images.txt \
+    --phases prepare,reconstruct,render,scale \
+    --reconstruction_steps 30000 --replace"
+test -s "$BASE_CHECKPOINT"
+test -s "$BASE/split.json"
+test -s "$BASE/metric_alignment/scale_info.txt"
+test "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$BASE/selected_indices.json")" -eq "$SOURCE_COUNT"
+test "$(find "$BASE/recon_results/$BASE_ID/reconstruction/$BASE_ID/ours_30000/renders" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$SOURCE_COUNT"
+
+stage explicit_caption_embedding_from_official_wan_revision
+mkdir -p "$SCRATCH/models/wan_caption" "$SCRATCH/hf_download_cache" "$SCRATCH/hf_xet_cache"
+container_gpu python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Wan-AI/Wan2.1-T2V-14B-Diffusers', revision='38ec498cb3208fb688890f8cc7e94ede2cbd7f68', local_dir='/work/models/wan_caption', cache_dir='/work/hf_download_cache', allow_patterns=['tokenizer/*','text_encoder/*'])"
+CAPTION='A bright modern open-plan lake house interior with pale wood floors, white walls, black-framed windows, white sofas, a fireplace, an indoor tree, and a spacious kitchen with a central island, wood and dark blue cabinetry, pendant lights, dining chairs, shelves, and decorative plants. The rooms are clean, furnished, naturally illuminated, empty of people, and shown with realistic materials, straight architectural lines, stable geometry, and consistent details.'
+mkdir -p "$BASE/captions/$BASE_ID"
+container_gpu python /workspace/artifixer/scripts/generate_fixed_caption_embedding.py \
+    --caption "$CAPTION" \
+    --output /work/data/$BASE_ID/captions/$BASE_ID/caption.h5 \
+    --model-path /work/models/wan_caption \
+    --device cuda:0
+test -s "$BASE/captions/$BASE_ID/caption.h5"
+
+stage generate_14_lane_spherical_snake_and_14_view_rig
+mkdir -p "$TRAJECTORY_DIR"
+container_cpu python /workspace/artifixer/scripts/generate_spherical_snake_trajectory.py \
+    /work/data/$BASE_ID/3dgrut_input/$BASE_ID/nerfstudio/transforms.json \
+    /work/trajectories/$SNAKE_ID/snake.json \
+    --manifest /work/trajectories/$SNAKE_ID/snake_manifest.json \
+    --reference-frame 0 --start-frame 0 --frame-count "$SOURCE_COUNT" \
+    --orientation 0:0 --orientation-name H000 \
+    --orientation 0:45 --orientation-name U000 \
+    --orientation 90:45 --orientation-name U090 \
+    --orientation 60:0 --orientation-name H060 \
+    --orientation 120:0 --orientation-name H120 \
+    --orientation 90:-45 --orientation-name D090 \
+    --orientation 180:-45 --orientation-name D180 \
+    --orientation 180:0 --orientation-name H180 \
+    --orientation 180:45 --orientation-name U180 \
+    --orientation 270:45 --orientation-name U270 \
+    --orientation 240:0 --orientation-name H240 \
+    --orientation 300:0 --orientation-name H300 \
+    --orientation 270:-45 --orientation-name D270 \
+    --orientation 360:-45 --orientation-name D000 \
+    --max-turn-degrees 5 --size 768 --fov-degrees 110
+container_cpu python /workspace/artifixer/scripts/generate_world_locked14_trajectories.py \
+    /work/data/$BASE_ID/3dgrut_input/$BASE_ID/nerfstudio/transforms.json \
+    /work/trajectories/$SNAKE_ID/frustum_rig \
+    --size 768 --fov-degrees 110
+python3 - "$SNAKE_TRAJECTORY" "$SNAKE_MANIFEST" "$RIG_DIR/manifest.json" \
+    "$SOURCE_COUNT" "$SNAKE_TARGET_COUNT" "$RIG_TARGET_COUNT" "$SNAKE_TURN_COUNT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+trajectory = json.loads(Path(sys.argv[1]).read_text())
+snake = json.loads(Path(sys.argv[2]).read_text())
+rig = json.loads(Path(sys.argv[3]).read_text())
+source_count, target_count, rig_count, turn_count = map(int, sys.argv[4:])
+assert len(trajectory["frames"]) == target_count
+assert snake["target_count"] == target_count
+assert len(snake["lanes"]) == 14
+assert sum(turn["intermediate_count"] for turn in snake["turns"]) == turn_count
+assert snake["maximum_generated_angular_step_degrees"] <= 5.000001
+assert rig["frames_per_view"] == source_count
+assert rig["total_frames"] == rig_count
+assert set(snake["orientation_names"]) == set(rig["view_order"])
+assert all("file_path" not in frame for frame in trajectory["frames"])
+PY
+
+stage prepare_and_render_all_spherical_snake_targets
+mkdir -p "$SNAKE/captions/$SNAKE_ID"
+cp -p "$BASE/captions/$BASE_ID/caption.h5" "$SNAKE/captions/$SNAKE_ID/caption.h5"
+METRIC_SCALE=$(python3 - "$BASE/metric_alignment/scale_info.txt" <<'PY'
+import sys
+for line in open(sys.argv[1]):
+    if line.startswith("Scale factor:"):
+        print(float(line.split(":", 1)[1].split()[0]))
+        break
+else:
+    raise SystemExit("metric scale is missing")
+PY
+)
+container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.prepare_colmap_artifixer_inputs \
+    --colmap_dir /work/data/$BASE_ID/3dgrut_input/$BASE_ID \
+    --output_root /work/data/$SNAKE_ID \
+    --selected_image_names_file /work/data/$BASE_ID/selected_images.txt \
+    --trajectory_path /work/trajectories/$SNAKE_ID/snake.json \
+    --phases prepare,render,scale \
+    --reconstruction_checkpoint /work/data/$BASE_ID/3dgrut_runs/$BASE_ID/$BASE_ID/ours_30000/ckpt_30000.pt \
+    --reconstruction_steps 30000 --metric_scale $METRIC_SCALE --replace"
+test -s "$SNAKE/split.json"
+test "$(find "$SNAKE_RENDER/renders" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$SNAKE_TARGET_COUNT"
+test "$(find "$SNAKE_RENDER/depth" -maxdepth 1 -type f -name '*.npy' | wc -l)" -eq "$SNAKE_TARGET_COUNT"
+test "$(find "$SNAKE_RENDER/opacity" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$SNAKE_TARGET_COUNT"
+
+container_cpu python /workspace/artifixer/scripts/generate_spherical_snake_inference_manifest.py \
+    /work/data/$SNAKE_ID/trajectory/target_indices.json \
+    /work/data/$SNAKE_ID/recon_results/$SNAKE_ID/reconstruction/$SNAKE_ID/ours_30000/trajectory/selected_indices.json \
+    /work/data/$SNAKE_ID/inference_manifest.json \
+    --context-views 12 --core-size 49 --halo-size 12 --vae-phase 4 \
+    --maximum-item-frames 77 --trajectory /work/trajectories/$SNAKE_ID/snake.json --translation-break-ratio 5
+python3 - "$INFERENCE_MANIFEST" "$SNAKE_TARGET_COUNT" <<'PY'
+import json
+import sys
+manifest = json.load(open(sys.argv[1]))
+target_count = int(sys.argv[2])
+assert manifest["target_count"] == target_count
+assert max(len(item["target_indices"]) for item in manifest["items"]) <= 77
+outputs = [value for item in manifest["items"] for value in item["output_indices"] if value != -1]
+assert outputs == list(range(target_count))
+PY
+
+stage render_stitch_and_source_align_standard_3dgrut_erp_baseline
+container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.render_3dgrut_colmap \
+    --checkpoint /work/data/$BASE_ID/3dgrut_runs/$BASE_ID/$BASE_ID/ours_30000/ckpt_30000.pt \
+    --colmap_dir /work/data/$BASE_ID/3dgrut_input/$BASE_ID \
+    --output_root /work/raw_rig --experiment_name baseline \
+    --selected_indices /work/data/$BASE_ID/selected_indices.json \
+    --trajectory_path /work/trajectories/$SNAKE_ID/frustum_rig/combined.json"
+RAW_RIG="$SCRATCH/raw_rig/baseline/$BASE_ID/ours_30000/combined/renders"
+test "$(find "$RAW_RIG" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$RIG_TARGET_COUNT"
+mkdir -p "$SCRATCH/panoramas/raw_world"
+container_cpu python /workspace/artifixer/scripts/stitch_artifixer_frustums360.py \
+    --input-dir /work/raw_rig/baseline/$BASE_ID/ours_30000/combined/renders \
+    --manifest /work/trajectories/$SNAKE_ID/frustum_rig/manifest.json \
+    --output-dir /work/panoramas/raw_world \
+    --output-width 1024 --output-height 512 --qc-width 512 \
+    --blend-mode feather --ownership-mode angular
+container_cpu python /workspace/artifixer/scripts/reorient_erp_to_source_camera.py \
+    --input-dir /work/panoramas/raw_world/frames \
+    --source-transforms /work/data/$BASE_ID/3dgrut_input/$BASE_ID/nerfstudio/transforms.json \
+    --output-dir /work/panoramas/raw/frames --reference-frame 0
+encode_erp_video "$SCRATCH/panoramas/raw/frames" "$SCRATCH/panoramas/raw_3dgrut_1024x512_15fps.mp4"
+
+stage one_bidirectional_artifixer_stream_over_all_snake_targets
+mkdir -p "$AF2D"
+container_gpu bash -lc "cd /workspace/artifixer && torchrun --standalone --nproc_per_node=4 \
+    -m model_eval.run_inference \
+    --evalset reconstructed_colmap \
+    --checkpoint_pt /models/artifixer-14b.pt \
+    --save_dir /work/outputs/$SNAKE_ID/artifixer2d \
+    --split_path /work/data/$SNAKE_ID/split.json \
+    --inference_manifest_path /work/data/$SNAKE_ID/inference_manifest.json \
+    --render_trajectory trajectory \
+    --num_views 12 --max_neighbors_per_encode 1 \
+    --inference_pipeline bidirectional --context_parallel_size 4 \
+    --bidirectional_chunk_size 77 --save_frame_outputs_only"
+test "$(find "$AF2D" -type f -path '*/pred/*.png' | wc -l)" -eq "$SNAKE_TARGET_COUNT"
+qc_snake_nonblocking \
+    /work/data/$SNAKE_ID/recon_results/$SNAKE_ID/reconstruction/$SNAKE_ID/ours_30000/trajectory/renders \
+    /work/outputs/$SNAKE_ID/artifixer2d \
+    /work/outputs/$SNAKE_ID/artifixer2d/snake_turn_qc.json \
+    ARTIFIXER2D
+python3 "$RUN_REPO/scripts/extract_spherical_snake_lanes.py" \
+    --prediction-root "$AF2D" --snake-manifest "$SNAKE_MANIFEST" \
+    --rig-manifest "$RIG_DIR/manifest.json" --output-dir "$AF2D/view_major" --hardlink
+test "$(find "$AF2D/view_major" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$RIG_TARGET_COUNT"
+container_cpu python /workspace/artifixer/scripts/stitch_artifixer_frustums360.py \
+    --input-dir /work/outputs/$SNAKE_ID/artifixer2d/view_major \
+    --manifest /work/trajectories/$SNAKE_ID/frustum_rig/manifest.json \
+    --output-dir /work/panoramas/artifixer2d_world \
+    --output-width 1024 --output-height 512 --qc-width 512 \
+    --blend-mode feather --ownership-mode angular
+container_cpu python /workspace/artifixer/scripts/reorient_erp_to_source_camera.py \
+    --input-dir /work/panoramas/artifixer2d_world/frames \
+    --source-transforms /work/data/$BASE_ID/3dgrut_input/$BASE_ID/nerfstudio/transforms.json \
+    --output-dir /work/panoramas/artifixer2d/frames --reference-frame 0
+encode_erp_video "$SCRATCH/panoramas/artifixer2d/frames" "$SCRATCH/panoramas/artifixer2d_1024x512_15fps.mp4"
+
+stage canonical_depth_loop_targets_and_geometry_locked_distillation_35000
+mkdir -p "$AF2D/all_predictions" "$SCRATCH/canonical"
+PYTHONPATH="$RUN_REPO" python3 -m scripts.materialize_spherical_snake_predictions \
+    --input-root "$AF2D" --output-dir "$AF2D/all_predictions" --expected-count "$SNAKE_TARGET_COUNT" --hardlink
+container_gpu python /workspace/artifixer/scripts/build_depth_canonical_targets.py \
+    --transforms /work/trajectories/$SNAKE_ID/snake.json \
+    --depth-dir /work/data/$SNAKE_ID/recon_results/$SNAKE_ID/reconstruction/$SNAKE_ID/ours_30000/trajectory/depth \
+    --opacity-dir /work/data/$SNAKE_ID/recon_results/$SNAKE_ID/reconstruction/$SNAKE_ID/ours_30000/trajectory/opacity \
+    --render-dir /work/data/$SNAKE_ID/recon_results/$SNAKE_ID/reconstruction/$SNAKE_ID/ours_30000/trajectory/renders \
+    --prediction-dir /work/outputs/$SNAKE_ID/artifixer2d/all_predictions \
+    --output-dir /work/canonical \
+    --sample-stride 4 --voxel-pixels 2.5 --depth-percentile 99.5 \
+    --low-opacity 0.78 --high-opacity 0.98 --singleton-weight 0.25 --support-for-full-weight 4
+test "$(find "$SCRATCH/canonical/frames" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9][0-9].png' | wc -l)" -eq "$SNAKE_TARGET_COUNT"
+test "$(find "$SCRATCH/canonical/frames" -maxdepth 1 -type f -name '*_mask.png' | wc -l)" -eq "$SNAKE_TARGET_COUNT"
+for number in $(seq 0 $((SNAKE_TARGET_COUNT - 1))); do
+    index=$(printf '%05d' "$number")
+    ln "$SNAKE_RENDER/depth/$index.npy" "$SCRATCH/canonical/frames/${index}_depth.npy"
+    ln "$SCRATCH/canonical/frames/$index.png" "$SCRATCH/canonical/frames/${index}_color_loop.png"
+    ln "$SCRATCH/canonical/frames/${index}_mask.png" "$SCRATCH/canonical/frames/${index}_color_loop_mask.png"
+done
+container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.run_artifixer3d \
+    --scene_root /work/data/$SNAKE_ID \
+    --artifixer_frames_dir /work/canonical/frames \
+    --output_root /work/data/$SNAKE_ID/distill_locked35k \
+    --render_trajectory_path /work/trajectories/$SNAKE_ID/snake.json \
+    --base_checkpoint /work/data/$BASE_ID/3dgrut_runs/$BASE_ID/$BASE_ID/ours_30000/ckpt_30000.pt \
+    --fresh_optimizer_on_resume --geometry_locked \
+    --depth_guided --depth_loss_weight 0.5 \
+    --color_loop_guided --color_loop_loss_weight 0.02 \
+    --balanced_real_override_sampling --real_samples_per_override 3 \
+    --override_reconstruction_weight 0.5 --override_lpips_weight 0.05 \
+    --artifixer3d_steps 35000 --checkpoint_iterations 31000 33000 35000 \
+    --config_name apps/colmap_3dgut_sparse_mcmc_lpips \
+    --phases distill --replace --no-use_wandb"
+test -s "$DISTILLED_CHECKPOINT"
+
+# Deliberately start a fresh CUDA process before loading the renderer.  The
+# geometry-locked training process can occupy almost all 80 GiB with optimizer
+# state.  The dataset's bounded intrinsics LRU also prevents thousands of
+# virtual-camera ray grids from being copied to one GPU at render startup.
+stage geometry_locked_distillation_gpu_reset_and_snake_render
+container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.run_artifixer3d \
+    --scene_root /work/data/$SNAKE_ID \
+    --output_root /work/data/$SNAKE_ID/distill_locked35k \
+    --render_trajectory_path /work/trajectories/$SNAKE_ID/snake.json \
+    --artifixer3d_steps 35000 \
+    --phases render,prepare_artifixer3d_plus --replace --no-use_wandb"
+test -s "$SNAKE/split_artifixer3d_plus.json"
+test "$(find "$DISTILLED_SNAKE_RENDER/renders" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$SNAKE_TARGET_COUNT"
+
+container_gpu python - \
+    /work/data/$BASE_ID/3dgrut_runs/$BASE_ID/$BASE_ID/ours_30000/ckpt_30000.pt \
+    /work/data/$SNAKE_ID/distill_locked35k/runs/$SNAKE_ID/$SNAKE_ID/ours_35000/ckpt_35000.pt \
+    /work/data/$SNAKE_ID/distill_locked35k/geometry_lock_verification.json <<'PY'
+import json
+import sys
+import torch
+
+base_path, final_path, output_path = sys.argv[1:]
+base = torch.load(base_path, map_location="cpu", weights_only=False)
+final = torch.load(final_path, map_location="cpu", weights_only=False)
+locked = ("positions", "rotation", "scale", "density")
+equal = {name: bool(torch.equal(base[name], final[name])) for name in locked}
+if not all(equal.values()):
+    raise SystemExit(f"geometry lock violated: {equal}")
+appearance_changed = not torch.equal(base["features_albedo"], final["features_albedo"])
+if not appearance_changed:
+    raise SystemExit("distillation did not update features_albedo")
+result = {
+    "base_global_step": int(base["global_step"]),
+    "final_global_step": int(final["global_step"]),
+    "locked_tensors_bitwise_equal": equal,
+    "features_albedo_changed": appearance_changed,
+}
+with open(output_path, "w") as handle:
+    json.dump(result, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+print(json.dumps(result, indent=2))
+PY
+qc_snake_nonblocking \
+    /work/data/$SNAKE_ID/recon_results/$SNAKE_ID/reconstruction/$SNAKE_ID/ours_30000/trajectory/renders \
+    /work/data/$SNAKE_ID/distill_locked35k/recon_results/$SNAKE_ID/artifixer3d/$SNAKE_ID/ours_35000/snake/renders \
+    /work/data/$SNAKE_ID/distill_locked35k/snake_turn_qc.json \
+    DISTILLED
+
+stage render_stitch_and_source_align_geometry_locked_distilled_erp
+container_gpu bash -lc "cd /workspace/artifixer && python -m data_processing.run_artifixer3d \
+    --scene_root /work/data/$SNAKE_ID \
+    --output_root /work/data/$SNAKE_ID/distill_locked35k \
+    --render_trajectory_path /work/trajectories/$SNAKE_ID/frustum_rig/combined.json \
+    --artifixer3d_steps 35000 --phases render --replace --no-use_wandb"
+test "$(find "$DISTILLED_RIG_RENDER/renders" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$RIG_TARGET_COUNT"
+container_cpu python /workspace/artifixer/scripts/stitch_artifixer_frustums360.py \
+    --input-dir /work/data/$SNAKE_ID/distill_locked35k/recon_results/$SNAKE_ID/artifixer3d/$SNAKE_ID/ours_35000/combined/renders \
+    --manifest /work/trajectories/$SNAKE_ID/frustum_rig/manifest.json \
+    --output-dir /work/panoramas/distilled_world \
+    --output-width 1024 --output-height 512 --qc-width 512 \
+    --blend-mode feather --ownership-mode angular
+container_cpu python /workspace/artifixer/scripts/reorient_erp_to_source_camera.py \
+    --input-dir /work/panoramas/distilled_world/frames \
+    --source-transforms /work/data/$BASE_ID/3dgrut_input/$BASE_ID/nerfstudio/transforms.json \
+    --output-dir /work/panoramas/distilled/frames --reference-frame 0
+encode_erp_video "$SCRATCH/panoramas/distilled/frames" "$SCRATCH/panoramas/distilled_locked35k_1024x512_15fps.mp4"
+
+stage final_artifixer3d_plus_bidirectional_pass
+mkdir -p "$AFPLUS"
+container_gpu bash -lc "cd /workspace/artifixer && torchrun --standalone --nproc_per_node=4 \
+    -m model_eval.run_inference \
+    --evalset reconstructed_colmap \
+    --checkpoint_pt /models/artifixer-14b.pt \
+    --save_dir /work/outputs/$SNAKE_ID/artifixer3d_plus \
+    --split_path /work/data/$SNAKE_ID/split_artifixer3d_plus.json \
+    --inference_manifest_path /work/data/$SNAKE_ID/inference_manifest.json \
+    --render_trajectory trajectory \
+    --num_views 12 --max_neighbors_per_encode 1 \
+    --inference_pipeline bidirectional --context_parallel_size 4 \
+    --bidirectional_chunk_size 77 --save_frame_outputs_only"
+test "$(find "$AFPLUS" -type f -path '*/pred/*.png' | wc -l)" -eq "$SNAKE_TARGET_COUNT"
+qc_snake_nonblocking \
+    /work/data/$SNAKE_ID/distill_locked35k/recon_results/$SNAKE_ID/artifixer3d/$SNAKE_ID/ours_35000/snake/renders \
+    /work/outputs/$SNAKE_ID/artifixer3d_plus \
+    /work/outputs/$SNAKE_ID/artifixer3d_plus/snake_turn_qc.json \
+    ARTIFIXER3D_PLUS
+python3 "$RUN_REPO/scripts/extract_spherical_snake_lanes.py" \
+    --prediction-root "$AFPLUS" --snake-manifest "$SNAKE_MANIFEST" \
+    --rig-manifest "$RIG_DIR/manifest.json" --output-dir "$AFPLUS/view_major" --hardlink
+test "$(find "$AFPLUS/view_major" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$RIG_TARGET_COUNT"
+container_cpu python /workspace/artifixer/scripts/stitch_artifixer_frustums360.py \
+    --input-dir /work/outputs/$SNAKE_ID/artifixer3d_plus/view_major \
+    --manifest /work/trajectories/$SNAKE_ID/frustum_rig/manifest.json \
+    --output-dir /work/panoramas/artifixer3d_plus_world \
+    --output-width 1024 --output-height 512 --qc-width 512 \
+    --blend-mode feather --ownership-mode angular
+container_cpu python /workspace/artifixer/scripts/reorient_erp_to_source_camera.py \
+    --input-dir /work/panoramas/artifixer3d_plus_world/frames \
+    --source-transforms /work/data/$BASE_ID/3dgrut_input/$BASE_ID/nerfstudio/transforms.json \
+    --output-dir /work/panoramas/artifixer3d_plus/frames --reference-frame 0
+encode_erp_video "$SCRATCH/panoramas/artifixer3d_plus/frames" "$SCRATCH/panoramas/artifixer3d_plus_1024x512_15fps.mp4"
+
+stage comparison_video_and_media_validation
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -i "$SCRATCH/panoramas/raw_3dgrut_1024x512_15fps.mp4" \
+    -i "$SCRATCH/panoramas/artifixer2d_1024x512_15fps.mp4" \
+    -i "$SCRATCH/panoramas/distilled_locked35k_1024x512_15fps.mp4" \
+    -i "$SCRATCH/panoramas/artifixer3d_plus_1024x512_15fps.mp4" \
+    -filter_complex '[0:v][1:v][2:v][3:v]hstack=inputs=4[v]' -map '[v]' \
+    -frames:v "$SOURCE_COUNT" -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
+    "$SCRATCH/panoramas/comparison_raw_2d_distilled_plus_4096x512_15fps.mp4"
+python3 - "$SOURCE_COUNT" \
+    "$SCRATCH/panoramas/raw_3dgrut_1024x512_15fps.mp4" \
+    "$SCRATCH/panoramas/artifixer2d_1024x512_15fps.mp4" \
+    "$SCRATCH/panoramas/distilled_locked35k_1024x512_15fps.mp4" \
+    "$SCRATCH/panoramas/artifixer3d_plus_1024x512_15fps.mp4" \
+    "$SCRATCH/panoramas/comparison_raw_2d_distilled_plus_4096x512_15fps.mp4" <<'PY'
+import json
+import subprocess
+import sys
+
+expected_frames = int(sys.argv[1])
+for index, path in enumerate(sys.argv[2:]):
+    expected_width = 4096 if index == 4 else 1024
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height,avg_frame_rate,nb_read_frames", "-of", "json", path],
+        check=True, capture_output=True, text=True,
+    )
+    stream = json.loads(result.stdout)["streams"][0]
+    assert int(stream["width"]) == expected_width
+    assert int(stream["height"]) == 512
+    assert stream["avg_frame_rate"] == "15/1"
+    assert int(stream["nb_read_frames"]) == expected_frames
+PY
+
+stage compact_atomic_publish
+mkdir -p "$PUBLISH_STAGE/videos" "$PUBLISH_STAGE/frames/final" "$PUBLISH_STAGE/qc" \
+    "$PUBLISH_STAGE/checkpoints" "$PUBLISH_STAGE/manifests"
+cp -p "$SCRATCH/panoramas/raw_3dgrut_1024x512_15fps.mp4" "$PUBLISH_STAGE/videos/"
+cp -p "$SCRATCH/panoramas/artifixer2d_1024x512_15fps.mp4" "$PUBLISH_STAGE/videos/"
+cp -p "$SCRATCH/panoramas/distilled_locked35k_1024x512_15fps.mp4" "$PUBLISH_STAGE/videos/"
+cp -p "$SCRATCH/panoramas/artifixer3d_plus_1024x512_15fps.mp4" "$PUBLISH_STAGE/videos/"
+cp -p "$SCRATCH/panoramas/comparison_raw_2d_distilled_plus_4096x512_15fps.mp4" "$PUBLISH_STAGE/videos/"
+cp -p "$SCRATCH/panoramas/artifixer3d_plus/frames/"*.png "$PUBLISH_STAGE/frames/final/"
+cp -p "$BASE_CHECKPOINT" "$PUBLISH_STAGE/checkpoints/base_3dgrut_30000.pt"
+cp -p "$DISTILLED_CHECKPOINT" "$PUBLISH_STAGE/checkpoints/geometry_locked_35000.pt"
+cp -p "$AF2D/snake_turn_qc.json" "$PUBLISH_STAGE/qc/artifixer2d_snake_turn_qc.json"
+cp -p "$DISTILL/snake_turn_qc.json" "$PUBLISH_STAGE/qc/distilled_snake_turn_qc.json"
+cp -p "$AFPLUS/snake_turn_qc.json" "$PUBLISH_STAGE/qc/artifixer3d_plus_snake_turn_qc.json"
+cp -p "$DISTILL/geometry_lock_verification.json" "$PUBLISH_STAGE/qc/"
+cp -p "$SCRATCH/qc_exit_codes.env" "$PUBLISH_STAGE/qc/"
+cp -p "$SNAKE_MANIFEST" "$INFERENCE_MANIFEST" "$RIG_DIR/manifest.json" "$PUBLISH_STAGE/manifests/"
+cp -p "$SCRATCH/panoramas/raw/source_camera_alignment.json" "$PUBLISH_STAGE/manifests/raw_source_camera_alignment.json"
+cp -p "$SCRATCH/panoramas/artifixer2d/source_camera_alignment.json" "$PUBLISH_STAGE/manifests/artifixer2d_source_camera_alignment.json"
+cp -p "$SCRATCH/panoramas/distilled/source_camera_alignment.json" "$PUBLISH_STAGE/manifests/distilled_source_camera_alignment.json"
+cp -p "$SCRATCH/panoramas/artifixer3d_plus/source_camera_alignment.json" "$PUBLISH_STAGE/manifests/artifixer3d_plus_source_camera_alignment.json"
+cp -p "$BASE/metric_alignment/scale_info.txt" "$PUBLISH_STAGE/manifests/"
+test ! -f "$BASE/metric_alignment/scale_provenance.json" || cp -p "$BASE/metric_alignment/scale_provenance.json" "$PUBLISH_STAGE/manifests/"
+cp -p "$POSE_CANDIDATE" "$PUBLISH_STAGE/manifests/pose_candidate.json"
+cp -p "$SOURCE_MANIFEST" "$PUBLISH_STAGE/manifests/source_manifest_v2.json"
+cp -p "$BASE/captions/$BASE_ID/caption.h5" "$PUBLISH_STAGE/manifests/caption.h5"
+python3 - "$PUBLISH_STAGE" "$POSE_CANDIDATE_SHA256" "$PIPELINE_SCRIPT_SHA256" "$PBS_JOBID" \
+    "$SOURCE_COUNT" "$SNAKE_TARGET_COUNT" "$REORIENT_SCRIPT_SHA256" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+source_count = int(sys.argv[5])
+snake_target_count = int(sys.argv[6])
+source_manifest = json.loads((root / "manifests/source_manifest_v2.json").read_text())
+source_records = source_manifest["records"]
+files = {}
+for path in sorted(root.rglob("*")):
+    if path.is_file():
+        files[str(path.relative_to(root))] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size_bytes": path.stat().st_size,
+        }
+result = {
+    "schema": "artifixer.roomtour_standard_full_pipeline_v2",
+    "status": "PASS",
+    "verdict": "PASS_FULL_ROOMTOUR_360",
+    "job_id": sys.argv[4],
+    "pose_candidate_sha256": sys.argv[2],
+    "pipeline_script_sha256": sys.argv[3],
+    "reorient_script_sha256": sys.argv[7],
+    "source_image_count": source_count,
+    "base_3dgrut_step": 30000,
+    "snake_lane_count": 14,
+    "snake_target_count": snake_target_count,
+    "distilled_step": 35000,
+    "geometry_locked": True,
+    "erp": {"width": 1024, "height": 512, "frames": source_count, "fps": 15},
+    "erp_orientation": "per_frame_source_camera_optical_axis_and_up",
+    "source_observed_seconds": {
+        "first": source_records[0].get("source_absolute_seconds"),
+        "last": source_records[-1].get("source_absolute_seconds"),
+    },
+    "qc_is_diagnostic_not_a_holdout_gate": True,
+    "files": files,
+}
+(root / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+PY
+(
+    cd "$PUBLISH_STAGE"
+    find . -type f ! -name sha256sums.txt -print0 | sort -z | xargs -0 sha256sum > sha256sums.txt
+)
+test "$(find "$PUBLISH_STAGE/frames/final" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq "$SOURCE_COUNT"
+test "$(find "$PUBLISH_STAGE/videos" -maxdepth 1 -type f -name '*.mp4' | wc -l)" -eq 5
+find "$PUBLISH_STAGE" -type f -exec chmod 0444 {} +
+mv "$PUBLISH_STAGE" "$PUBLISHED"
+RESULT=PASS_FULL_ROOMTOUR_360
+write_status R NA
+echo "FULL_PIPELINE_RESULT=$PUBLISHED/result.json"
+echo "FINAL_ERP_VIDEO=$PUBLISHED/videos/artifixer3d_plus_1024x512_15fps.mp4"
+echo "COMPARISON_VIDEO=$PUBLISHED/videos/comparison_raw_2d_distilled_plus_4096x512_15fps.mp4"

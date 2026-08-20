@@ -1,0 +1,136 @@
+#!/bin/bash
+#PBS -N gauvain-snake14-prep
+#PBS -l rt_QG=1
+#PBS -l walltime=06:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+: "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
+REPO="$AFROOT/src/ArtiFixer"
+SIF="$AFROOT/models/artifixer-cuda12.sif"
+SOURCE_ID=gauvain_colmap_fixed_v2
+SOURCE="$AFROOT/data/$SOURCE_ID"
+SOURCE_TRANSFORMS="$SOURCE/3dgrut_input/$SOURCE_ID/nerfstudio/transforms.json"
+SOURCE_CAPTION="$SOURCE/captions/$SOURCE_ID/caption.h5"
+SOURCE_CHECKPOINT="$SOURCE/artifixer3d/runs/$SOURCE_ID/$SOURCE_ID/ours_30000/ckpt_30000.pt"
+SCENE_ID=gauvain_wlsnake14_full154_v1
+SCENE="$AFROOT/data/$SCENE_ID"
+TRAJECTORY_DIR="$AFROOT/trajectories/$SCENE_ID"
+TRAJECTORY="$TRAJECTORY_DIR/snake.json"
+TRAJECTORY_MANIFEST="$TRAJECTORY_DIR/snake_manifest.json"
+RIG_DIR="$TRAJECTORY_DIR/frustum_rig"
+RENDER="$SCENE/recon_results/$SCENE_ID/reconstruction/$SCENE_ID/ours_30000/trajectory"
+INFERENCE_MANIFEST="$SCENE/inference_manifest.json"
+STATUS_DIR="$AFROOT/outputs/$SCENE_ID/status"
+
+test -s "$SOURCE_TRANSFORMS"
+test -s "$SOURCE_CAPTION"
+test -s "$SOURCE_CHECKPOINT"
+test -s "$SIF"
+test ! -e "$SCENE" || { echo "Refusing to overwrite existing scene: $SCENE" >&2; exit 2; }
+test ! -e "$TRAJECTORY_DIR" || { echo "Refusing to overwrite existing trajectory: $TRAJECTORY_DIR" >&2; exit 2; }
+mkdir -p "$TRAJECTORY_DIR" "$SCENE/captions/$SCENE_ID" "$STATUS_DIR"
+
+cd "$REPO"
+python3 scripts/generate_spherical_snake_trajectory.py \
+    "$SOURCE_TRANSFORMS" "$TRAJECTORY" \
+    --manifest "$TRAJECTORY_MANIFEST" \
+    --reference-frame 0 --start-frame 0 --frame-count 154 \
+    --orientation 0:0 --orientation-name H000 \
+    --orientation 0:45 --orientation-name U000 \
+    --orientation 90:45 --orientation-name U090 \
+    --orientation 60:0 --orientation-name H060 \
+    --orientation 120:0 --orientation-name H120 \
+    --orientation 90:-45 --orientation-name D090 \
+    --orientation 180:-45 --orientation-name D180 \
+    --orientation 180:0 --orientation-name H180 \
+    --orientation 180:45 --orientation-name U180 \
+    --orientation 270:45 --orientation-name U270 \
+    --orientation 240:0 --orientation-name H240 \
+    --orientation 300:0 --orientation-name H300 \
+    --orientation 270:-45 --orientation-name D270 \
+    --orientation 360:-45 --orientation-name D000 \
+    --max-turn-degrees 5 --size 768 --fov-degrees 110
+python3 scripts/generate_world_locked14_trajectories.py \
+    "$SOURCE_TRANSFORMS" "$RIG_DIR" --size 768 --fov-degrees 110
+cp -f "$SOURCE_CAPTION" "$SCENE/captions/$SCENE_ID/caption.h5"
+
+python3 - "$TRAJECTORY" "$TRAJECTORY_MANIFEST" "$RIG_DIR/manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+trajectory = json.loads(Path(sys.argv[1]).read_text())
+manifest = json.loads(Path(sys.argv[2]).read_text())
+rig = json.loads(Path(sys.argv[3]).read_text())
+assert len(trajectory["frames"]) == 2310
+assert manifest["target_count"] == 2310
+assert len(manifest["lanes"]) == 14
+assert sum(turn["intermediate_count"] for turn in manifest["turns"]) == 154
+assert manifest["maximum_generated_angular_step_degrees"] <= 5.000001
+assert set(manifest["orientation_names"]) == set(rig["view_order"])
+assert all("file_path" not in frame for frame in trajectory["frames"])
+PY
+
+export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+singularity exec --nv \
+    --bind "$REPO:/workspace/artifixer" \
+    --bind "$REPO/thirdparty/3DGRUT-ArtiFixer:/workspace/thirdparty/3DGRUT-ArtiFixer" \
+    --bind "$AFROOT:/work" \
+    --env PYTHONPATH=/workspace/artifixer \
+    --env PYTHONUNBUFFERED=1 \
+    --env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    "$SIF" \
+    bash -lc "cd /workspace/artifixer && python -m data_processing.prepare_colmap_artifixer_inputs \
+        --colmap_dir /work/data/$SOURCE_ID/3dgrut_input/$SOURCE_ID \
+        --output_root /work/data/$SCENE_ID \
+        --selected_image_names_file /work/data/$SOURCE_ID/selected_images.txt \
+        --trajectory_path /work/trajectories/$SCENE_ID/snake.json \
+        --phases prepare,render,scale \
+        --reconstruction_checkpoint /work/data/$SOURCE_ID/artifixer3d/runs/$SOURCE_ID/$SOURCE_ID/ours_30000/ckpt_30000.pt \
+        --reconstruction_steps 30000 \
+        --metric_scale 0.9280554461013264 \
+        --replace"
+
+TARGET_INDICES="$SCENE/trajectory/target_indices.json"
+SELECTED_INDICES="$RENDER/selected_indices.json"
+test -s "$SCENE/split.json"
+test -s "$TARGET_INDICES"
+test -s "$SELECTED_INDICES"
+test "$(find "$RENDER/renders" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 2310
+test "$(find "$RENDER/depth" -maxdepth 1 -type f -name '*.npy' | wc -l)" -eq 2310
+
+python3 scripts/generate_spherical_snake_inference_manifest.py \
+    "$TARGET_INDICES" "$SELECTED_INDICES" "$INFERENCE_MANIFEST" \
+    --context-views 12 --core-size 49 --halo-size 12 \
+    --maximum-item-frames 77 \
+    --trajectory "$TRAJECTORY" --translation-break-ratio 5
+
+python3 - "$INFERENCE_MANIFEST" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+assert manifest["target_count"] == 2310
+assert len(manifest["items"]) == 71
+assert len(manifest["break_positions"]) == 42
+assert max(len(item["target_indices"]) for item in manifest["items"]) <= 77
+assert manifest["translation_break_detection"]["ratio"] == 5
+outputs = [value for item in manifest["items"] for value in item["output_indices"] if value != -1]
+assert outputs == list(range(2310))
+PY
+
+{
+    printf 'JOB_ID=%q\n' "${PBS_JOBID:-local}"
+    printf 'SCENE_ID=%q\n' "$SCENE_ID"
+    printf 'TRAJECTORY=%q\n' "$TRAJECTORY"
+    printf 'TRAJECTORY_MANIFEST=%q\n' "$TRAJECTORY_MANIFEST"
+    printf 'RIG_MANIFEST=%q\n' "$RIG_DIR/manifest.json"
+    printf 'INFERENCE_MANIFEST=%q\n' "$INFERENCE_MANIFEST"
+    printf 'WORLD_LOCKED=true\nSOURCE_COUNT=154\nLANE_COUNT=14\nCONNECTOR_COUNT=154\nTARGET_COUNT=2310\nMAX_TURN_DEGREES=5\n'
+    printf 'INFERENCE_ITEMS=71\nTRANSLATION_BREAKS=42\nTRANSLATION_BREAK_RATIO=5\n'
+} > "$STATUS_DIR/preparation_success.env"
+cat "$STATUS_DIR/preparation_success.env"
