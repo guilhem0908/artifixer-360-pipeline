@@ -94,6 +94,14 @@ class PropeDotProductAttention(torch.nn.Module):
         assert viewmats.shape == (batch, cameras, 4, 4)
         assert Ks_norm.shape == (batch, cameras, 3, 3)
         self.cameras = cameras
+        # Keep the compact camera tensors as well as the prepared full-context
+        # transforms.  Very long multi-view contexts cannot be converted to
+        # float32 in one allocation (272 cameras require about 6 GiB for a
+        # single K or V tensor at the current resolution).  The cached camera
+        # tensors let inference apply exactly the same transform camera block
+        # by camera block instead.
+        self._cached_viewmats = viewmats
+        self._cached_Ks_norm = Ks_norm
 
         self.apply_fn_q, self.apply_fn_kv, self.apply_fn_o = _prepare_apply_fns(
             head_dim=self.head_dim,
@@ -118,6 +126,110 @@ class PropeDotProductAttention(torch.nn.Module):
         assert kv.shape == (batch, num_heads, seqlen, head_dim)
         assert self.apply_fn_kv is not None
         return self.apply_fn_kv(kv)
+
+    def _apply_to_kv_inplace_chunked(
+        self,
+        kv: torch.Tensor,
+        max_cameras_per_chunk: int,
+    ) -> torch.Tensor:
+        """Apply the cached target transform without a full float32 copy.
+
+        This is an inference-only, memory-bounded equivalent of::
+
+            self._apply_to_kv(kv.float()).to(kv.dtype)
+
+        Each camera owns an independent contiguous block of image tokens, so
+        chunking on camera boundaries changes neither the transform nor the
+        set of keys/values later presented to attention.  Results are copied
+        back to the projection tensor after the same float32 computation used
+        by the unchunked path.
+        """
+        return self._apply_chunked(
+            kv,
+            max_cameras_per_chunk=max_cameras_per_chunk,
+            transform_index=1,
+            output=kv,
+        )
+
+    def _apply_to_q_chunked(
+        self,
+        q: torch.Tensor,
+        max_cameras_per_chunk: int,
+        output: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return an exact, memory-bounded query transform.
+
+        Queries must remain unchanged for the regular text cross-attention, so
+        unlike cached neighbor K/V this path writes into one bf16-sized output
+        buffer.  Splitting each camera further by attention head bounds the
+        temporary float32 einsum tensors on GPUs with little remaining memory.
+        """
+        if output is None:
+            output = torch.empty_like(q)
+        return self._apply_chunked(
+            q,
+            max_cameras_per_chunk=max_cameras_per_chunk,
+            transform_index=0,
+            output=output,
+        )
+
+    def _apply_to_o_inplace_chunked(
+        self,
+        o: torch.Tensor,
+        max_cameras_per_chunk: int,
+    ) -> torch.Tensor:
+        """Apply the inverse output transform in-place with bounded temporaries."""
+        return self._apply_chunked(
+            o,
+            max_cameras_per_chunk=max_cameras_per_chunk,
+            transform_index=2,
+            output=o,
+        )
+
+    def _apply_chunked(
+        self,
+        source_tensor: torch.Tensor,
+        *,
+        max_cameras_per_chunk: int,
+        transform_index: int,
+        output: torch.Tensor,
+    ) -> torch.Tensor:
+        if torch.is_grad_enabled():
+            raise RuntimeError("chunked PRoPE is only valid during inference")
+        if max_cameras_per_chunk <= 0:
+            raise ValueError("max_cameras_per_chunk must be positive")
+        batch, num_heads, seqlen, head_dim = source_tensor.shape
+        if output.shape != source_tensor.shape or output.dtype != source_tensor.dtype:
+            raise ValueError("PRoPE output must match its source tensor")
+        if batch != self._cached_viewmats.shape[0] or head_dim != self.head_dim:
+            raise ValueError("tensor does not match the cached PRoPE camera batch")
+        if seqlen % self.cameras:
+            raise ValueError("sequence must contain an integer number of camera images")
+        tokens_per_camera = seqlen // self.cameras
+        if tokens_per_camera != self.patches_x * self.patches_y:
+            raise ValueError("camera token count does not match the PRoPE patch grid")
+        if transform_index not in (0, 1, 2):
+            raise ValueError("unknown PRoPE transform index")
+
+        for camera_start in range(0, self.cameras, max_cameras_per_chunk):
+            camera_stop = min(camera_start + max_cameras_per_chunk, self.cameras)
+            token_start = camera_start * tokens_per_camera
+            token_stop = camera_stop * tokens_per_camera
+            apply_fn = _prepare_apply_fns(
+                head_dim=self.head_dim,
+                viewmats=self._cached_viewmats[:, camera_start:camera_stop],
+                Ks_norm=self._cached_Ks_norm[:, camera_start:camera_stop],
+                coeffs_x=(self.coeffs_x_0, self.coeffs_x_1),
+                coeffs_y=(self.coeffs_y_0, self.coeffs_y_1),
+            )[transform_index]
+            # A single head keeps all float32 workspaces below one camera/head
+            # even when the full bf16 output buffer is resident.
+            for head_start in range(num_heads):
+                source = source_tensor[:, head_start : head_start + 1, token_start:token_stop]
+                destination = output[:, head_start : head_start + 1, token_start:token_stop]
+                transformed = apply_fn(source.float()).to(source.dtype)
+                destination.copy_(transformed)
+        return output
 
     def _apply_to_o(self, o: torch.Tensor) -> torch.Tensor:
         batch, num_heads, seqlen, head_dim = o.shape

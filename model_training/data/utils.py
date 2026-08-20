@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 """
 Shared utilities for DL3DV datasets.
@@ -56,6 +57,9 @@ class InferencePair:
     chunk_idx: int
     scene_id: str = ""
     is_test_frame: List[bool] = None  # True for actual test frames, False for train frames included for constant fps
+    output_indices: List[int] | None = None  # Stable output names; -1 marks halo/conditioning-only frames.
+    global_frame_ids: List[int] | None = None  # Stable snake-stream ids used for deterministic latent noise.
+    item_noise_seed: int | None = None  # Reproducible per-item RNG seed, including causal KV-cache inference.
 
 
 def so3_relative_angle(R1: np.ndarray, R2: np.ndarray) -> np.ndarray:
@@ -518,6 +522,55 @@ def _camera_rays_for_intrinsics(
     rays_o_ref = averaged_c2ws_ref[:, :3, 3].unsqueeze(1).expand(-1, rays_d_ref.shape[1], -1)
     rays_dxo_ref = torch.linalg.cross(rays_o_ref, rays_d_ref)
     return torch.cat([rays_dxo_ref, rays_d_ref], dim=-1).view(rays_d_ref.shape[0], image_height, image_width, 6)
+
+
+def equirectangular_camera_rays_from_w2cs(
+    w2cs: torch.Tensor,
+    image_height: int,
+    image_width: int,
+) -> torch.Tensor:
+    """Build Plucker rays for a full 360x180 equirectangular target.
+
+    ``w2cs`` must use the same relative reference frame returned by
+    :func:`compute_camera_conditioning`.  Longitude zero points along the
+    camera's +Z axis, positive longitude points toward +X, and the image top
+    points toward -Y, matching the OpenCV camera-ray convention used for the
+    regular pinhole targets.
+
+    This supplies geometrically correct spherical ray conditioning.  A single
+    pinhole K cannot describe an equirectangular image, so callers must not use
+    PRoPE neighbor cross-attention for this experimental projection.
+    """
+    if w2cs.ndim != 3 or w2cs.shape[-2:] != (4, 4):
+        raise ValueError(f"w2cs must have shape (T, 4, 4), got {tuple(w2cs.shape)}")
+    if image_height <= 0 or image_width <= 0 or image_width != 2 * image_height:
+        raise ValueError(
+            "equirectangular image dimensions must be positive and width == 2 * height, "
+            f"got {(image_height, image_width)}"
+        )
+
+    device = w2cs.device
+    dtype = w2cs.dtype
+    x = torch.arange(image_width, device=device, dtype=dtype) + 0.5
+    y = torch.arange(image_height, device=device, dtype=dtype) + 0.5
+    longitude = x / image_width * (2.0 * torch.pi) - torch.pi
+    latitude = torch.pi / 2.0 - y / image_height * torch.pi
+    latitude, longitude = torch.meshgrid(latitude, longitude, indexing="ij")
+    cos_latitude = torch.cos(latitude)
+    rays_d_cam = torch.stack(
+        [
+            cos_latitude * torch.sin(longitude),
+            -torch.sin(latitude),
+            cos_latitude * torch.cos(longitude),
+        ],
+        dim=-1,
+    )
+
+    c2ws_ref = invert_SE3(w2cs)
+    rays_d_ref = torch.einsum("hwc,tdc->thwd", rays_d_cam, c2ws_ref[:, :3, :3])
+    rays_o_ref = c2ws_ref[:, None, None, :3, 3].expand(-1, image_height, image_width, -1)
+    rays_dxo_ref = torch.linalg.cross(rays_o_ref, rays_d_ref)
+    return torch.cat([rays_dxo_ref, rays_d_ref], dim=-1)
 
 
 def compute_camera_conditioning(

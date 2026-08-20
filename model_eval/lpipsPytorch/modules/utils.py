@@ -26,7 +26,10 @@ def get_state_dict(net_type: str = "alex", version: str = "0.1"):
     old_state_dict = torch.hub.load_state_dict_from_url(
         url,
         progress=True,
-        map_location=None,
+        # Some cached LPIPS files were serialized from CUDA tensors.  Loading
+        # them directly on a CPU-only validation node otherwise raises before
+        # the module can be moved to its requested device.
+        map_location="cpu",
     )
 
     # rename keys

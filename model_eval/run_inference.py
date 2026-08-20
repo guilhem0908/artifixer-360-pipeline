@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 """
 Inference script for eval.
@@ -197,7 +198,9 @@ def _values_for_valid_frames(value, valid_mask: list[bool], name: str) -> list[i
 def _eval_frame_metadata(item: dict) -> tuple[list[bool], list[int], list[int]]:
     valid_mask = _valid_mask_list(item)
     frame_indices = _values_for_valid_frames(item.get("frame_indices"), valid_mask, "frame_indices")
-    output_source = item.get("gt_index")
+    output_source = item.get("output_indices")
+    if output_source is None:
+        output_source = item.get("gt_index")
     if output_source is None:
         output_source = item.get("frame_indices")
     output_indices = _values_for_valid_frames(output_source, valid_mask, "output_indices")
@@ -476,10 +479,22 @@ def process_item(pipe, item, args, output_dir, rank, device, vae_temporal_scale,
         if args.save_frame_outputs_only or output_video_frames_complete(scene_dir, item):
             return
 
+    # Explicit manifests may reuse one angular noise sequence at different
+    # camera centres.  Seeding here makes both the official causal KV-cache
+    # path and the full-chunk path reproducible without changing either
+    # pipeline's denoising semantics.
+    item_noise_seed = item.get("item_noise_seed")
+    if item_noise_seed is not None:
+        item_noise_seed = int(item_noise_seed)
+        torch.manual_seed(item_noise_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(item_noise_seed)
+
     rgb_rendered = item["rgb_rendered"].unsqueeze(0).to(device)
     rgb_gt = item["rgb_gt"].unsqueeze(0).to(device) if has_gt else None
-    rgb_neighbors = item["rgb_neighbors"].unsqueeze(0)
-    if args.max_neighbors_per_encode is None:
+    disable_neighbors = getattr(args, "disable_neighbors", False)
+    rgb_neighbors = None if disable_neighbors else item["rgb_neighbors"].unsqueeze(0)
+    if rgb_neighbors is not None and args.max_neighbors_per_encode is None:
         rgb_neighbors = rgb_neighbors.to(device)
     rgb_neighbors_cpu = item["rgb_neighbors"].cpu()
     encoded_prompt = item["encoded_prompt"].unsqueeze(0).to(device)
@@ -493,6 +508,28 @@ def process_item(pipe, item, args, output_dir, rank, device, vae_temporal_scale,
     )
     target_num_frames = original_num_frames + pad_frames
     target_latent_num_frames = latent_num_frames_from_rgb_num_frames(target_num_frames, vae_temporal_scale)
+
+    noise_ids = None
+    if "global_frame_ids" in item:
+        global_frame_ids = [int(value) for value in _to_list(item["global_frame_ids"])]
+        if len(global_frame_ids) != original_num_frames:
+            raise ValueError(
+                f"global_frame_ids has {len(global_frame_ids)} entries, expected {original_num_frames}"
+            )
+        if any(second != first + 1 for first, second in zip(global_frame_ids, global_frame_ids[1:])):
+            raise ValueError("global_frame_ids must describe one contiguous snake-stream slice")
+        if global_frame_ids[0] % vae_temporal_scale:
+            raise ValueError(
+                f"global_frame_ids must start on a VAE phase boundary divisible by {vae_temporal_scale}"
+            )
+        padded_ids = global_frame_ids + list(
+            range(global_frame_ids[-1] + 1, global_frame_ids[-1] + 1 + pad_frames)
+        )
+        noise_ids = torch.tensor(padded_ids[::vae_temporal_scale], dtype=torch.long, device=device)
+        if len(noise_ids) != target_latent_num_frames:
+            raise AssertionError(
+                f"derived {len(noise_ids)} noise ids for {target_latent_num_frames} target latent frames"
+            )
 
     if pad_frames > 0:
         rgb_rendered = pad_temporal(rgb_rendered, pad_frames, dim=1)
@@ -516,8 +553,8 @@ def process_item(pipe, item, args, output_dir, rank, device, vae_temporal_scale,
     if latent_pad_frames > 0:
         Ks = pad_temporal(Ks, latent_pad_frames, dim=1)
 
-    neighbor_w2cs = item["neighbor_w2cs"].unsqueeze(0).to(device)
-    neighbor_Ks = item["neighbor_Ks"].unsqueeze(0).to(device)
+    neighbor_w2cs = None if disable_neighbors else item["neighbor_w2cs"].unsqueeze(0).to(device)
+    neighbor_Ks = None if disable_neighbors else item["neighbor_Ks"].unsqueeze(0).to(device)
 
     kwargs = {
         "rendered_rgb": rgb_rendered,
@@ -532,7 +569,13 @@ def process_item(pipe, item, args, output_dir, rank, device, vae_temporal_scale,
         "num_inference_steps": args.num_inference_steps,
         "show_progress": rank == 0,
         "max_neighbors_per_encode": args.max_neighbors_per_encode,
+        "neighbor_prope_chunk_cameras": args.neighbor_prope_chunk_cameras,
     }
+    if noise_ids is not None:
+        if args.inference_pipeline != "bidirectional":
+            raise ValueError("manifest global noise ids require --inference_pipeline bidirectional")
+        kwargs["noise_ids"] = noise_ids
+        kwargs["noise_seed"] = args.deterministic_noise_seed
 
     if args.inference_pipeline == "kv_cache":
         latents = pipe.denoise_to_latents(**kwargs)
@@ -855,6 +898,12 @@ def add_inference_args(parser: argparse.ArgumentParser) -> None:
         help="NCCL process-group timeout used by distributed eval barriers.",
     )
     parser.add_argument("--num_inference_steps", default=4, type=int)
+    parser.add_argument(
+        "--deterministic_noise_seed",
+        default=0,
+        type=int,
+        help="Base seed for manifest-provided global latent ids shared across overlapping joint windows.",
+    )
     parser.add_argument("--frames_per_block", default=7, type=int)
     parser.add_argument("--local_attn_size", default=21, type=int)
     parser.add_argument("--sink_size", default=7, type=int)
@@ -885,6 +934,23 @@ def add_inference_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--neighbor_prope_chunk_cameras",
+        default=None,
+        type=int,
+        help=(
+            "Apply neighbor PRoPE transforms in exact in-place camera micro-batches, "
+            "bounding temporary float32 memory without dropping context views."
+        ),
+    )
+    parser.add_argument(
+        "--disable_neighbors",
+        action="store_true",
+        help=(
+            "Disable real-image neighbor conditioning. This is required for experimental target "
+            "projections such as equirectangular panoramas that cannot be represented by one pinhole K."
+        ),
+    )
+    parser.add_argument(
         "--output_suffix",
         default="",
         type=str,
@@ -895,6 +961,15 @@ def add_inference_args(parser: argparse.ArgumentParser) -> None:
 
 def add_dl3dv_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--split_path", type=Path, default=None)
+    parser.add_argument(
+        "--inference_manifest_path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional explicit reconstructed_colmap item manifest with ordered targets, real neighbors, "
+            "stable output ids, and global snake-stream ids."
+        ),
+    )
     parser.add_argument("--dl3dv_dir", type=Path, default=None)
     parser.add_argument("--prompt_dir", type=Path, default=None)
     parser.add_argument("--recon_results_dir", type=Path, default=None)
@@ -971,6 +1046,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     validate_evalset_args(parser, args)
     if args.max_neighbors_per_encode is not None and args.max_neighbors_per_encode <= 0:
         parser.error("--max_neighbors_per_encode must be positive when set")
+    if args.neighbor_prope_chunk_cameras is not None and args.neighbor_prope_chunk_cameras <= 0:
+        parser.error("--neighbor_prope_chunk_cameras must be positive when set")
     return args
 
 

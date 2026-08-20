@@ -1,9 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 import argparse
+import hashlib
+import json
 import logging
 import os
+from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 import cv2
@@ -22,6 +27,143 @@ from threedgrut.datasets.utils import (
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
+
+METRIC_SCALE_PROVENANCE_FILENAME = "scale_provenance.json"
+METRIC_SCALE_PROVENANCE_SCHEMA_VERSION = 1
+
+
+def canonical_selected_image_names(selected_image_names: Sequence[str | Path]) -> list[str]:
+    """Normalize an explicit selection to ordered, unique image basenames."""
+
+    if isinstance(selected_image_names, str | Path):
+        raise TypeError("selected_image_names must be a sequence, not one path or string")
+    basenames: list[str] = []
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for value in selected_image_names:
+        basename = Path(value).name
+        if not basename or basename in {".", ".."}:
+            raise ValueError(f"Selected image name has no valid basename: {value!r}")
+        if basename in seen:
+            if basename not in duplicates:
+                duplicates.append(basename)
+        else:
+            seen.add(basename)
+            basenames.append(basename)
+    if duplicates:
+        raise ValueError(f"Selected image basenames contain duplicates: {duplicates}")
+    if not basenames:
+        raise ValueError("At least one selected image basename is required")
+    return basenames
+
+
+def selected_image_names_sha256(selected_image_names: Sequence[str | Path]) -> str:
+    """Hash ordered canonical basenames as UTF-8 lines with a final newline."""
+
+    basenames = canonical_selected_image_names(selected_image_names)
+    digest = hashlib.sha256()
+    for basename in basenames:
+        digest.update(basename.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def selected_image_provenance(selected_image_names: Sequence[str | Path], scale: float) -> dict[str, object]:
+    basenames = canonical_selected_image_names(selected_image_names)
+    return {
+        "schema_version": METRIC_SCALE_PROVENANCE_SCHEMA_VERSION,
+        "selection_mode": "SELECTED_IMAGE_BASENAMES",
+        "scale_factor": float(scale),
+        "selected_image_count": len(basenames),
+        "selected_image_names_sha256": selected_image_names_sha256(basenames),
+        "selected_image_names": basenames,
+        "selected_image_names_hash_encoding": "UTF-8 newline-delimited basenames with final newline; order preserved",
+    }
+
+
+def write_metric_scale_artifacts(
+    output_dir: str | Path,
+    scale: float,
+    selected_image_names: Sequence[str | Path] | None = None,
+) -> None:
+    """Write the legacy scale file plus train-only provenance when selected."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "scale_info.txt").write_text(f"Scale factor: {scale}\n")
+    provenance_path = output_dir / METRIC_SCALE_PROVENANCE_FILENAME
+    if selected_image_names is None:
+        provenance_path.unlink(missing_ok=True)
+        return
+    provenance = selected_image_provenance(selected_image_names, scale)
+    provenance_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
+
+
+def validate_metric_scale_provenance(
+    output_dir: str | Path,
+    scale: float,
+    selected_image_names: Sequence[str | Path],
+) -> None:
+    """Refuse to reuse a scale unless its exact ordered train selection matches."""
+
+    path = Path(output_dir) / METRIC_SCALE_PROVENANCE_FILENAME
+    if not path.is_file():
+        raise RuntimeError(
+            f"Existing metric scale has no train-only selection provenance at {path}; re-run with --replace"
+        )
+    try:
+        observed = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Could not read metric-scale selection provenance at {path}") from error
+    expected = selected_image_provenance(selected_image_names, scale)
+    if observed != expected:
+        raise RuntimeError(
+            f"Existing metric-scale selection provenance at {path} does not match the requested training images; "
+            "re-run with --replace"
+        )
+
+
+def select_metric_alignment_images(
+    images: Sequence[Image],
+    selected_image_names: Sequence[str | Path],
+) -> tuple[list[Image], list[str]]:
+    """Select COLMAP images in requested order using unambiguous basenames."""
+
+    basenames = canonical_selected_image_names(selected_image_names)
+    image_by_basename: dict[str, Image] = {}
+    duplicate_colmap_basenames: list[str] = []
+    for image in images:
+        basename = Path(image.name).name
+        if basename in image_by_basename:
+            if basename not in duplicate_colmap_basenames:
+                duplicate_colmap_basenames.append(basename)
+        else:
+            image_by_basename[basename] = image
+    if duplicate_colmap_basenames:
+        raise ValueError(f"COLMAP image basenames contain duplicates: {duplicate_colmap_basenames}")
+    missing = [basename for basename in basenames if basename not in image_by_basename]
+    if missing:
+        raise ValueError(f"Selected image basenames are missing from the COLMAP model: {missing}")
+    return [image_by_basename[basename] for basename in basenames], basenames
+
+
+def resolve_selected_image_paths(images: Sequence[Image], image_dir: str | Path) -> dict[str, Path]:
+    """Resolve every selected image before running MoGe, failing on missing files."""
+
+    image_dir = Path(image_dir)
+    resolved: dict[str, Path] = {}
+    missing: list[str] = []
+    for image in images:
+        basename = Path(image.name).name
+        candidates = (image_dir / basename, image_dir / image.name)
+        image_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if image_path is None:
+            missing.append(basename)
+        else:
+            resolved[basename] = image_path
+    if missing:
+        raise FileNotFoundError(f"Selected image files are missing under {image_dir}: {missing}")
+    return resolved
 
 
 class MoGeModelWrapper:
@@ -91,7 +233,14 @@ def project_points_to_image(points3D, qvec, tvec, camera_params, width, height):
     return x[valid], y[valid], depths[valid]
 
 
-def extract_colmap_depths(images, cameras, point3D_ids, points3D_xyz, image_dir):
+def extract_colmap_depths(
+    images,
+    cameras,
+    point3D_ids,
+    points3D_xyz,
+    image_dir,
+    image_paths_by_basename=None,
+):
     """Extract COLMAP depths for visible 3D points in each image."""
     # Create mapping from point3D_id to array index
     id_to_idx = {pid: idx for idx, pid in enumerate(point3D_ids)}
@@ -129,13 +278,18 @@ def extract_colmap_depths(images, cameras, point3D_ids, points3D_xyz, image_dir)
 
         # Store correspondences
         camera = cameras[img.camera_id]
+        image_path = (
+            image_paths_by_basename[Path(img.name).name]
+            if image_paths_by_basename is not None
+            else os.path.join(image_dir, img.name)
+        )
         correspondences.append(
             {
                 "image_name": img.name,
                 "xys": xys,
                 "depths_colmap": depths,
                 "camera": camera,
-                "image_path": os.path.join(image_dir, img.name),
+                "image_path": str(image_path),
             }
         )
 
@@ -628,6 +782,7 @@ def align_colmap_to_metric_scale(
     num_images=None,
     debug=True,
     downsample_factor=1.0,
+    selected_image_names=None,
 ):
     """Main function to align COLMAP reconstruction to metric scale.
 
@@ -638,6 +793,8 @@ def align_colmap_to_metric_scale(
         num_images: Limit number of images to process (for testing)
         debug: Enable debug visualizations
         downsample_factor: Factor by which images are downsampled (e.g., 4.0 for images_4)
+        selected_image_names: Ordered train-only image names. Names are matched by
+            basename and are mutually exclusive with num_images.
     """
 
     # Setup debug directory
@@ -665,12 +822,47 @@ def align_colmap_to_metric_scale(
         cameras = read_colmap_intrinsics_binary(new_cameras_path)
     images = read_colmap_extrinsics_binary(images_path)
 
-    if num_images is not None:
+    selected_basenames = None
+    selected_image_paths = None
+    if selected_image_names is not None:
+        if num_images is not None:
+            raise ValueError("selected_image_names and num_images are mutually exclusive")
+        images, selected_basenames = select_metric_alignment_images(images, selected_image_names)
+        selected_image_paths = resolve_selected_image_paths(images, image_dir)
+    elif num_images is not None:
         images = images[:num_images]
 
     # Extract COLMAP depths
     logger.info(f"Extracting COLMAP depths from {len(images)} images...")
-    correspondences = extract_colmap_depths(images, cameras, point_ids, points_xyz, image_dir)
+    if selected_basenames is None:
+        correspondences = extract_colmap_depths(images, cameras, point_ids, points_xyz, image_dir)
+    else:
+        correspondences = extract_colmap_depths(
+            images,
+            cameras,
+            point_ids,
+            points_xyz,
+            image_dir,
+            image_paths_by_basename=selected_image_paths,
+        )
+        selected_basename_set = set(selected_basenames)
+        correspondence_basenames = [Path(correspondence["image_name"]).name for correspondence in correspondences]
+        unexpected = [basename for basename in correspondence_basenames if basename not in selected_basename_set]
+        if unexpected:
+            raise RuntimeError(f"Metric alignment produced correspondences for non-selected images: {unexpected}")
+        duplicate_correspondences = sorted(
+            basename for basename, count in Counter(correspondence_basenames).items() if count > 1
+        )
+        if duplicate_correspondences:
+            raise RuntimeError(f"Metric alignment produced duplicate image correspondences: {duplicate_correspondences}")
+        missing_correspondences = [
+            basename for basename in selected_basenames if basename not in set(correspondence_basenames)
+        ]
+        if missing_correspondences:
+            raise RuntimeError(
+                "Selected training images have no usable COLMAP point correspondences: "
+                f"{missing_correspondences}"
+            )
     logger.info(f"Found {len(correspondences)} images with valid points")
 
     # Run Monodepth
@@ -692,6 +884,9 @@ def align_colmap_to_metric_scale(
     # Solve for scale
     logger.info("\nSolving for scale factor (mask-weighted L1)...")
     scale, stats = solve_scale_factor(correspondences)
+    if selected_basenames is not None:
+        stats["selected_image_count"] = len(selected_basenames)
+        stats["selected_image_names_sha256"] = selected_image_names_sha256(selected_basenames)
 
     logger.info("\nResults:")
     logger.info(f"  Scale factor: {scale:.6f}")
@@ -745,7 +940,14 @@ if __name__ == "__main__":
 
     # Common arguments
     parser.add_argument("--output_dir", default=None, help="Output directory for scaled reconstruction")
-    parser.add_argument("--num_images", type=int, default=None, help="Limit number of images to process")
+    selection_group = parser.add_mutually_exclusive_group()
+    selection_group.add_argument("--num_images", type=int, default=None, help="Limit number of images to process")
+    selection_group.add_argument(
+        "--selected_image_names_file",
+        type=Path,
+        default=None,
+        help="Optional newline-delimited train-only image selection, matched by basename",
+    )
     parser.add_argument("--no_debug", action="store_true", help="Disable debug visualizations")
     parser.add_argument(
         "--downsample_factor",
@@ -784,6 +986,12 @@ if __name__ == "__main__":
     if not os.path.exists(args.image_dir):
         parser.error(f"Image directory does not exist: {args.image_dir}")
 
+    selected_image_names = None
+    if args.selected_image_names_file is not None:
+        selected_image_names = canonical_selected_image_names(
+            [line.strip() for line in args.selected_image_names_file.read_text().splitlines() if line.strip()]
+        )
+
     scale, stats, correspondences = align_colmap_to_metric_scale(
         args.colmap_dir,
         args.image_dir,
@@ -791,7 +999,7 @@ if __name__ == "__main__":
         args.num_images,
         debug=not args.no_debug,
         downsample_factor=args.downsample_factor,
+        selected_image_names=selected_image_names,
     )
 
-    with open(os.path.join(args.output_dir, "scale_info.txt"), "w") as f:
-        f.write(f"Scale factor: {scale}\n")
+    write_metric_scale_artifacts(args.output_dir, scale, selected_image_names)

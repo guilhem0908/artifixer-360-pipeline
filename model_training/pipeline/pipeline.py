@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 from pathlib import Path
 
@@ -69,6 +70,9 @@ class ArtifixerPipeline(ArtifixerPipelineBase):
         show_progress: bool = False,
         progress_bar_leave: bool = True,
         max_neighbors_per_encode: int | None = None,
+        noise_ids: torch.Tensor | None = None,
+        noise_seed: int = 0,
+        neighbor_prope_chunk_cameras: int | None = None,
     ) -> torch.Tensor:
         condition = self.encode_video_frames(rendered_rgb)
 
@@ -80,7 +84,12 @@ class ArtifixerPipeline(ArtifixerPipelineBase):
         else:
             neighbors_condition = None
 
-        latents = self.prepare_latents(condition, rendered_opacity, True)
+        initial_noise = (
+            self.deterministic_noise_like(condition, noise_ids, noise_seed)
+            if noise_ids is not None
+            else None
+        )
+        latents = self.prepare_latents(condition, rendered_opacity, True, noise=initial_noise)
 
         if isinstance(prompt, torch.Tensor):
             if prompt.ndim != 3:
@@ -118,6 +127,7 @@ class ArtifixerPipeline(ArtifixerPipelineBase):
                 neighbor_w2cs=neighbor_w2cs,
                 Ks=Ks,
                 neighbor_Ks=neighbor_Ks,
+                neighbor_prope_chunk_cameras=neighbor_prope_chunk_cameras,
                 return_dict=False,
             )
 

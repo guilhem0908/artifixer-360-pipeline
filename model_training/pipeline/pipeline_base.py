@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 from abc import ABC, abstractmethod
 
@@ -88,6 +89,8 @@ class ArtifixerPipelineBase(nn.Module, ABC):
         show_progress: bool = False,
         progress_bar_leave: bool = True,
         max_neighbors_per_encode: int | None = None,
+        noise_ids: torch.Tensor | None = None,
+        noise_seed: int = 0,
     ) -> torch.Tensor: ...
 
     def rgb_to_latents(self, rgb: torch.Tensor) -> torch.Tensor:
@@ -99,7 +102,39 @@ class ArtifixerPipelineBase(nn.Module, ABC):
         latents = latents / self.latents_std + self.latents_mean
         return self.vae.decode(latents, return_dict=False)[0]
 
-    def prepare_latents(self, condition: torch.Tensor, opacity: torch.Tensor, is_first_chunk: bool) -> torch.Tensor:
+    @staticmethod
+    def deterministic_noise_like(
+        condition: torch.Tensor,
+        noise_ids: torch.Tensor,
+        seed: int,
+    ) -> torch.Tensor:
+        """Generate reproducible temporal noise keyed by global latent ids."""
+        ids = [int(value) for value in noise_ids.detach().cpu().tolist()]
+        if len(ids) != condition.shape[2] or len(set(ids)) != len(ids):
+            raise ValueError(
+                f"noise_ids must contain {condition.shape[2]} unique latent ids, got {ids}"
+            )
+        chunks = []
+        for noise_id in ids:
+            generator = torch.Generator(device=condition.device)
+            generator.manual_seed((int(seed) + 1_000_003 * noise_id) % (2**63 - 1))
+            chunks.append(
+                torch.randn(
+                    (*condition.shape[:2], 1, *condition.shape[3:]),
+                    generator=generator,
+                    device=condition.device,
+                    dtype=condition.dtype,
+                )
+            )
+        return torch.cat(chunks, dim=2)
+
+    def prepare_latents(
+        self,
+        condition: torch.Tensor,
+        opacity: torch.Tensor,
+        is_first_chunk: bool,
+        noise: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         opacity_for_mixing = (
             torch.cat([opacity[:, :1].repeat_interleave(3, dim=1), opacity], dim=1).unsqueeze(1)
             if is_first_chunk
@@ -113,7 +148,11 @@ class ArtifixerPipelineBase(nn.Module, ABC):
                 self.vae.config.scale_factor_spatial,
             ),
         )
-        latents = condition * opacity_for_mixing + torch.randn_like(condition) * (1 - opacity_for_mixing)
+        if noise is None:
+            noise = torch.randn_like(condition)
+        elif noise.shape != condition.shape:
+            raise ValueError(f"noise shape {tuple(noise.shape)} does not match condition {tuple(condition.shape)}")
+        latents = condition * opacity_for_mixing + noise * (1 - opacity_for_mixing)
 
         # CP ranks must start with identical latents — torch.randn_like uses
         # each GPU's local RNG, producing different noise per rank.  Broadcast
@@ -135,10 +174,13 @@ class ArtifixerPipelineBase(nn.Module, ABC):
             f"`num_frames - 1` has to be divisible by {self.vae.config.scale_factor_temporal}"
         )
 
+        flat = video_frames.flatten(0, 1)
+        processed = torch.cat(
+            [self.video_processor.preprocess(chunk) for chunk in flat.split(32, dim=0)],
+            dim=0,
+        )  # chunked to avoid the all-frames interpolate OOM on a single 48GB GPU
         video_frames = (
-            self.video_processor.preprocess(video_frames.flatten(0, 1))
-            .view(batch_size, num_frames, 3, height, width)
-            .permute(0, 2, 1, 3, 4)
+            processed.view(batch_size, num_frames, 3, height, width).permute(0, 2, 1, 3, 4)
         )
 
         return self.rgb_to_latents(video_frames)

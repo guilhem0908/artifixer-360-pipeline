@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 """ArtiFixer3D utilities for distilling corrected views back into 3DGRUT."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import struct
@@ -264,6 +266,112 @@ def validate_artifixer_frames(scene: PreparedScene, artifixer_frames_dir: Path) 
         raise FileNotFoundError(f"Missing ArtiFixer prediction frames in {artifixer_frames_dir}: {preview}{suffix}")
 
 
+def validate_depth_targets(scene: PreparedScene, artifixer_frames_dir: Path) -> None:
+    """Require one shared-reference distance map for every generated view."""
+    generated_indices = generated_frame_indices(scene)
+    missing = [index for index in generated_indices if not (artifixer_frames_dir / f"{index:05d}_depth.npy").is_file()]
+    if missing:
+        preview = ", ".join(f"{index:05d}_depth.npy" for index in missing[:10])
+        suffix = "" if len(missing) <= 10 else f", ... ({len(missing)} missing)"
+        raise FileNotFoundError(f"Missing depth-loop targets in {artifixer_frames_dir}: {preview}{suffix}")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_surface_depth_manifest(scene: PreparedScene, manifest_path: Path) -> dict[int, tuple[Path, Path]]:
+    """Validate trusted real-geometry depth targets and return their files by frame index."""
+    manifest_path = manifest_path.resolve()
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Missing surface-depth manifest: {manifest_path}")
+    payload = json.loads(manifest_path.read_text())
+    if payload.get("schema") != "artifixer.surface_depth_manifest_v1":
+        raise ValueError("surface-depth manifest must use schema artifixer.surface_depth_manifest_v1")
+    if payload.get("uses_base_3dgs_depth") is not False:
+        raise ValueError("surface-depth manifest must explicitly set uses_base_3dgs_depth=false")
+    if payload.get("depth_source") not in {"PATCHMATCH_FUSED_REAL_ONLY", "MESH_FUSED_REAL_ONLY"}:
+        raise ValueError("surface-depth manifest must come from fused real-image geometry, not a 3DGS checkpoint")
+    frames = payload.get("frames")
+    if not isinstance(frames, dict):
+        raise ValueError("surface-depth manifest frames must be a mapping")
+
+    expected = generated_frame_indices(scene)
+    if set(frames) != {f"{index:05d}" for index in expected}:
+        raise ValueError("surface-depth manifest must contain exactly every generated frame")
+
+    resolved: dict[int, tuple[Path, Path]] = {}
+    for index in expected:
+        key = f"{index:05d}"
+        entry = frames[key]
+        if not isinstance(entry, dict):
+            raise ValueError(f"surface-depth frame {key} must be a mapping")
+        quality = entry.get("quality")
+        if not isinstance(quality, dict):
+            raise ValueError(f"surface-depth frame {key} is missing quality evidence")
+        gates = {
+            "min_view_support": (3.0, "min"),
+            "max_reprojection_error_px": (2.0, "max"),
+            "max_relative_depth_disagreement": (0.02, "max"),
+            "max_rgb_spread": (0.04, "max"),
+        }
+        for name, (threshold, direction) in gates.items():
+            value = quality.get(name)
+            if not isinstance(value, int | float) or isinstance(value, bool):
+                raise ValueError(f"surface-depth frame {key} quality.{name} must be numeric")
+            passed = float(value) >= threshold if direction == "min" else float(value) <= threshold
+            if not passed:
+                raise ValueError(
+                    f"surface-depth frame {key} fails {name}: {value} "
+                    f"({'minimum' if direction == 'min' else 'maximum'} {threshold})"
+                )
+
+        depth_path = (manifest_path.parent / str(entry["depth_path"])).resolve()
+        mask_path = (manifest_path.parent / str(entry["confidence_mask_path"])).resolve()
+        for path, hash_field in ((depth_path, "depth_sha256"), (mask_path, "confidence_mask_sha256")):
+            if not path.is_file():
+                raise FileNotFoundError(f"Missing surface-depth target: {path}")
+            expected_hash = entry.get(hash_field)
+            if not isinstance(expected_hash, str) or sha256_file(path) != expected_hash:
+                raise ValueError(f"surface-depth frame {key} has invalid {hash_field}")
+        resolved[index] = (depth_path, mask_path)
+    return resolved
+
+
+def materialize_surface_depth_targets(
+    scene: PreparedScene,
+    manifest_path: Path,
+    override_image_dir: Path,
+) -> None:
+    """Replace legacy checkpoint depth sidecars with trusted real-geometry targets."""
+    for index, (depth_path, mask_path) in load_surface_depth_manifest(scene, manifest_path).items():
+        for source, target in (
+            (depth_path, override_image_dir / f"{index:05d}_depth.npy"),
+            (mask_path, override_image_dir / f"{index:05d}_mask.png"),
+        ):
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            symlink_frame(source, target)
+
+
+def validate_color_loop_targets(scene: PreparedScene, artifixer_frames_dir: Path) -> None:
+    """Require sparse colour-loop RGB/mask sidecars for every override view."""
+    generated_indices = generated_frame_indices(scene)
+    missing = []
+    for index in generated_indices:
+        for suffix in ("_color_loop.png", "_color_loop_mask.png"):
+            if not (artifixer_frames_dir / f"{index:05d}{suffix}").is_file():
+                missing.append(f"{index:05d}{suffix}")
+    if missing:
+        preview = ", ".join(missing[:10])
+        suffix = "" if len(missing) <= 10 else f", ... ({len(missing)} missing)"
+        raise FileNotFoundError(f"Missing color-loop targets in {artifixer_frames_dir}: {preview}{suffix}")
+
+
 def reset_directory(path: Path) -> None:
     """Replace materialized inputs explicitly and reject symlinks before deletion."""
     if path.exists():
@@ -507,6 +615,16 @@ def materialize_distillation_input(
             camera_id = len(colmap_cameras) + 1
             colmap_cameras.append(opencv_camera_from_mapping(camera_id, camera_intrinsics_for_frame(transforms, frame)))
             symlink_frame(source, paths.override_image_dir / f"{index:05d}.png")
+            source_mask = artifixer_frames_dir / f"{index:05d}_mask.png"
+            if source_mask.is_file():
+                symlink_frame(source_mask, paths.override_image_dir / f"{index:05d}_mask.png")
+            source_depth = artifixer_frames_dir / f"{index:05d}_depth.npy"
+            if source_depth.is_file():
+                symlink_frame(source_depth, paths.override_image_dir / f"{index:05d}_depth.npy")
+            for suffix in ("_color_loop.png", "_color_loop_mask.png"):
+                source_loop = artifixer_frames_dir / f"{index:05d}{suffix}"
+                if source_loop.is_file():
+                    symlink_frame(source_loop, paths.override_image_dir / f"{index:05d}{suffix}")
             qvec, tvec = colmap_pose_from_transforms_frame(frame, applied_transform)
         symlink_frame(source, image_dir / image_name)
 
@@ -524,8 +642,33 @@ def train_artifixer3d(
     *,
     artifixer_frames_dir: Path,
     base_checkpoint: Path | None,
+    fresh_optimizer_on_resume: bool,
+    geometry_locked: bool,
+    opacity_prune_locked: bool,
+    density_learning_rate: float,
+    resume_topology_start_iteration: int | None,
+    resume_topology_add_relocate_end_iteration: int | None,
+    resume_topology_perturb_end_iteration: int | None,
+    resume_topology_max_gaussians: int,
+    depth_guided: bool,
+    depth_loss_weight: float,
+    single_surface_guided: bool,
+    single_surface_loss_weight: float,
+    single_surface_front_transmittance: float,
+    surface_depth_manifest: Path | None,
+    geometry_authorization: Path | None,
+    color_loop_guided: bool,
+    color_loop_loss_weight: float,
+    balanced_real_override_sampling: bool,
+    real_samples_per_override: int,
+    scale_regularization_weight: float,
+    opacity_regularization_weight: float,
+    override_reconstruction_weight: float | None,
+    override_lpips_weight: float | None,
+    force_sh0_on_resume: bool,
     config_name: str,
     steps: int,
+    checkpoint_iterations: list[int] | None,
     use_wandb: bool,
     replace: bool,
 ) -> tuple[Path, bool]:
@@ -537,6 +680,105 @@ def train_artifixer3d(
         return checkpoint, True
 
     materialize_distillation_input(scene, paths, artifixer_frames_dir)
+    if single_surface_guided:
+        if surface_depth_manifest is None:
+            raise ValueError("--single_surface_guided requires --surface_depth_manifest")
+        if "3dgut" in config_name.lower():
+            raise ValueError(
+                "--single_surface_guided requires a 3DGRT config (for example apps/colmap_3dgrt_mcmc); "
+                "3DGUT bakes min_transmittance into its CUDA extension and cannot render both thresholds "
+                "differentiably in one training process"
+            )
+        if geometry_authorization is None:
+            raise ValueError("--single_surface_guided requires --geometry_authorization")
+        geometry_gate = json.loads(geometry_authorization.resolve().read_text())
+        if (
+            geometry_gate.get("schema") != "artifixer.geometry_gate_v1"
+            or geometry_gate.get("verdict") != "PASS_GEOMETRY_GATE"
+            or geometry_gate.get("authorization", {}).get("distillation_authorized") is not True
+        ):
+            raise ValueError("single-surface distillation is forbidden by the geometry authorization")
+        if not 0.0 < single_surface_loss_weight:
+            raise ValueError("--single_surface_loss_weight must be positive")
+        if not 0.03 < single_surface_front_transmittance < 1.0:
+            raise ValueError("--single_surface_front_transmittance must be in (0.03, 1.0)")
+        materialize_surface_depth_targets(scene, surface_depth_manifest, paths.override_image_dir)
+        # Both the expected surface and the front/full spread are evaluated only
+        # where fused real-image geometry passed the manifest confidence gates.
+        depth_guided = True
+    if depth_guided:
+        if depth_loss_weight <= 0:
+            raise ValueError("--depth_loss_weight must be positive when --depth_guided is enabled")
+        validate_depth_targets(scene, artifixer_frames_dir)
+    if color_loop_guided:
+        if color_loop_loss_weight <= 0:
+            raise ValueError("--color_loop_loss_weight must be positive with --color_loop_guided")
+        validate_color_loop_targets(scene, artifixer_frames_dir)
+    if real_samples_per_override < 1:
+        raise ValueError("--real_samples_per_override must be at least 1")
+    if scale_regularization_weight < 0:
+        raise ValueError("--scale_regularization_weight must be non-negative")
+    if opacity_regularization_weight < 0:
+        raise ValueError("--opacity_regularization_weight must be non-negative")
+    if density_learning_rate <= 0:
+        raise ValueError("--density_learning_rate must be positive")
+    if override_reconstruction_weight is not None and override_reconstruction_weight < 0:
+        raise ValueError("--override_reconstruction_weight must be non-negative")
+    if override_lpips_weight is not None and override_lpips_weight < 0:
+        raise ValueError("--override_lpips_weight must be non-negative")
+
+    requested_checkpoints = set(checkpoint_iterations or [])
+    invalid_checkpoints = sorted(iteration for iteration in requested_checkpoints if iteration <= 0 or iteration > steps)
+    if invalid_checkpoints:
+        raise ValueError(
+            f"checkpoint iterations must be in [1, {steps}], got {invalid_checkpoints}"
+        )
+    if force_sh0_on_resume and base_checkpoint is None:
+        raise ValueError("--force_sh0_on_resume requires --base_checkpoint")
+    if fresh_optimizer_on_resume and base_checkpoint is None:
+        raise ValueError("--fresh_optimizer_on_resume requires --base_checkpoint")
+    if geometry_locked and opacity_prune_locked:
+        raise ValueError("--geometry_locked and --opacity_prune_locked are mutually exclusive")
+    if opacity_prune_locked and base_checkpoint is None:
+        raise ValueError("--opacity_prune_locked requires --base_checkpoint")
+    if opacity_prune_locked and depth_guided:
+        raise ValueError(
+            "--opacity_prune_locked rejects --depth_guided because base-checkpoint depth can preserve the phantom"
+        )
+    topology_bounds = (
+        resume_topology_start_iteration,
+        resume_topology_add_relocate_end_iteration,
+        resume_topology_perturb_end_iteration,
+    )
+    topology_requested = any(value is not None for value in topology_bounds)
+    if topology_requested:
+        if any(value is None for value in topology_bounds):
+            raise ValueError(
+                "resumed topology refinement requires start, add/relocate end, and perturb end iterations"
+            )
+        if base_checkpoint is None:
+            raise ValueError("resumed topology refinement requires --base_checkpoint")
+        if geometry_locked or opacity_prune_locked:
+            raise ValueError(
+                "resumed topology refinement is mutually exclusive with geometry and opacity-prune locks"
+            )
+        assert resume_topology_start_iteration is not None
+        assert resume_topology_add_relocate_end_iteration is not None
+        assert resume_topology_perturb_end_iteration is not None
+        if not (
+            0 <= resume_topology_start_iteration
+            < resume_topology_add_relocate_end_iteration
+            <= resume_topology_perturb_end_iteration
+            <= steps
+        ):
+            raise ValueError(
+                "resumed topology bounds must satisfy "
+                "0 <= start < add/relocate end <= perturb end <= artifixer3d steps"
+            )
+        if resume_topology_max_gaussians < 1:
+            raise ValueError("--resume_topology_max_gaussians must be positive")
+    requested_checkpoints.add(steps)
+    checkpoint_iterations_override = ",".join(str(iteration) for iteration in sorted(requested_checkpoints))
 
     overrides = [
         f"path={paths.distillation_input_dir}",
@@ -548,8 +790,152 @@ def train_artifixer3d(
         f"experiment_name={scene.scene_id}",
         f"n_iterations={steps}",
         f"use_wandb={'True' if use_wandb else 'False'}",
-        f"checkpoint.iterations=[{steps}]",
+        f"checkpoint.iterations=[{checkpoint_iterations_override}]",
     ]
+    if geometry_locked:
+        if base_checkpoint is None:
+            raise ValueError("--geometry_locked requires --base_checkpoint")
+        disabled_strategy_start = steps + 1
+        disabled_strategy_end = steps + 2
+        overrides.extend(
+            [
+                "resume_optimizer=False",
+                "model.optimize_position=False",
+                "model.optimize_rotation=False",
+                "model.optimize_scale=False",
+                "model.optimize_density=False",
+                "model.optimize_features_albedo=True",
+                "model.optimize_features_specular=False",
+                f"strategy.relocate.start_iteration={disabled_strategy_start}",
+                f"strategy.relocate.end_iteration={disabled_strategy_end}",
+                f"strategy.perturb.start_iteration={disabled_strategy_start}",
+                f"strategy.perturb.end_iteration={disabled_strategy_end}",
+                f"strategy.add.start_iteration={disabled_strategy_start}",
+                f"strategy.add.end_iteration={disabled_strategy_end}",
+                "loss.use_lpips_override=True",
+                "loss.lambda_lpips_override=0.05",
+                "loss.lambda_reconlosses_override=1.0",
+                "loss.lambda_l1_override=0.8",
+                "loss.lambda_ssim_override=0.2",
+            ]
+        )
+    if opacity_prune_locked:
+        disabled_strategy_start = steps + 1
+        disabled_strategy_end = steps + 2
+        overrides.extend(
+            [
+                "resume_optimizer=False",
+                "model.optimize_position=False",
+                "model.optimize_rotation=False",
+                "model.optimize_scale=False",
+                "model.optimize_density=True",
+                "model.optimize_features_albedo=False",
+                "model.optimize_features_specular=False",
+                "model.monotonic_density_on_resume=True",
+                f"optimizer.params.density.lr={density_learning_rate:g}",
+                f"strategy.relocate.start_iteration={disabled_strategy_start}",
+                f"strategy.relocate.end_iteration={disabled_strategy_end}",
+                f"strategy.perturb.start_iteration={disabled_strategy_start}",
+                f"strategy.perturb.end_iteration={disabled_strategy_end}",
+                f"strategy.add.start_iteration={disabled_strategy_start}",
+                f"strategy.add.end_iteration={disabled_strategy_end}",
+                "loss.use_lpips_override=False",
+                "loss.lambda_reconlosses_override=1.0",
+                "loss.lambda_l1_override=0.8",
+                "loss.lambda_ssim_override=0.2",
+            ]
+        )
+    if topology_requested:
+        assert resume_topology_start_iteration is not None
+        assert resume_topology_add_relocate_end_iteration is not None
+        assert resume_topology_perturb_end_iteration is not None
+        overrides.extend(
+            [
+                "resume_optimizer=False",
+                "model.optimize_position=True",
+                "model.optimize_rotation=True",
+                "model.optimize_scale=True",
+                "model.optimize_density=True",
+                "model.optimize_features_albedo=True",
+                "model.optimize_features_specular=True",
+                "model.monotonic_density_on_resume=False",
+                f"strategy.relocate.start_iteration={resume_topology_start_iteration}",
+                f"strategy.relocate.end_iteration={resume_topology_add_relocate_end_iteration}",
+                f"strategy.add.start_iteration={resume_topology_start_iteration}",
+                f"strategy.add.end_iteration={resume_topology_add_relocate_end_iteration}",
+                f"strategy.add.max_n_gaussians={resume_topology_max_gaussians}",
+                f"strategy.perturb.start_iteration={resume_topology_start_iteration}",
+                f"strategy.perturb.end_iteration={resume_topology_perturb_end_iteration}",
+            ]
+        )
+    if depth_guided:
+        overrides.extend(
+            [
+                "loss.use_depth_override=True",
+                f"loss.lambda_depth_override={depth_loss_weight:g}",
+            ]
+        )
+    if single_surface_guided:
+        overrides.extend(
+            [
+                "loss.use_single_surface_override=True",
+                f"loss.lambda_single_surface_override={single_surface_loss_weight:g}",
+                f"loss.single_surface_front_transmittance={single_surface_front_transmittance:g}",
+                "loss.depth_override_is_metric_surface=True",
+            ]
+        )
+    if color_loop_guided:
+        overrides.extend(
+            [
+                "loss.use_color_loop_override=True",
+                f"loss.lambda_color_loop_override={color_loop_loss_weight:g}",
+            ]
+        )
+    if balanced_real_override_sampling:
+        overrides.extend(
+            [
+                "balanced_real_override_sampling=True",
+                f"real_samples_per_override={real_samples_per_override}",
+            ]
+        )
+    if scale_regularization_weight > 0:
+        overrides.extend(
+            [
+                "loss.use_scale=True",
+                f"loss.lambda_scale={scale_regularization_weight:g}",
+            ]
+        )
+    if opacity_regularization_weight > 0:
+        overrides.extend(
+            [
+                "loss.use_opacity=True",
+                f"loss.lambda_opacity={opacity_regularization_weight:g}",
+            ]
+        )
+    if override_reconstruction_weight is not None:
+        overrides.extend(
+            [
+                "loss.use_lpips_override=True",
+                f"loss.lambda_reconlosses_override={override_reconstruction_weight:g}",
+            ]
+        )
+    if override_lpips_weight is not None:
+        overrides.extend(
+            [
+                "loss.use_lpips_override=True",
+                f"loss.lambda_lpips_override={override_lpips_weight:g}",
+            ]
+        )
+    if force_sh0_on_resume:
+        overrides.extend(
+            [
+                "resume_optimizer=False",
+                "model.force_sh0_on_resume=True",
+                "model.optimize_features_specular=False",
+            ]
+        )
+    if fresh_optimizer_on_resume:
+        overrides.append("resume_optimizer=False")
     if base_checkpoint is not None:
         base_checkpoint = base_checkpoint.resolve()
         assert base_checkpoint.is_file(), f"Missing initial 3DGRUT checkpoint: {base_checkpoint}"
@@ -639,12 +1025,14 @@ def write_artifixer3d_plus_inference_split(
     paths: Artifixer3DPaths,
     render_dir: Path,
     reconstruction_checkpoint: Path,
+    *,
+    render_frame_count: int | None = None,
 ) -> Path:
     """Write the reconstructed_colmap split consumed by ArtiFixer3D+ inference."""
     output_split = paths.artifixer3d_plus_inference_split_path
     require_render_outputs(
         render_dir,
-        scene.frame_count,
+        scene.frame_count if render_frame_count is None else render_frame_count,
         expected_selected_indices_path=paths.distillation_selected_indices_path,
     )
     if not reconstruction_checkpoint.is_file():
@@ -684,6 +1072,22 @@ def parse_phases(value: str) -> set[str]:
     return phases
 
 
+def require_passed_phantom_qc(report_path: Path | None) -> None:
+    """Authorize final 2D+ preparation only after the geometry-only gate passed."""
+    if report_path is None:
+        raise ValueError("--require_geometry_qc_for_plus requires --geometry_qc_report")
+    report_path = report_path.resolve()
+    if not report_path.is_file():
+        raise FileNotFoundError(f"Missing geometry QC report: {report_path}")
+    report = json.loads(report_path.read_text())
+    if report.get("schema") != "artifixer.phantom_qc_v1":
+        raise ValueError("geometry QC report must use schema artifixer.phantom_qc_v1")
+    if report.get("verdict") != "PASS_SINGLE_SURFACE":
+        raise ValueError(
+            f"geometry QC did not pass ({report.get('verdict')}); ArtiFixer3D+ preparation is forbidden"
+        )
+
+
 def run_artifixer3d(args: argparse.Namespace) -> None:
     """Orchestrate requested ArtiFixer3D phases with reuse and replace semantics."""
     phases = parse_phases(args.phases)
@@ -694,12 +1098,6 @@ def run_artifixer3d(args: argparse.Namespace) -> None:
 
     checkpoint = artifixer3d_checkpoint(scene, paths, args.artifixer3d_steps)
     render_trajectory_path = (args.render_trajectory_path or scene.transforms_path).resolve()
-    if "prepare_artifixer3d_plus" in phases and render_trajectory_path != scene.transforms_path.resolve():
-        raise ValueError(
-            "--phases prepare_artifixer3d_plus requires rendering the distillation trajectory. "
-            "Use --phases render with --render_trajectory_path for arbitrary post-training renders."
-        )
-
     checkpoint_reused = True
     if "distill" in phases:
         assert (
@@ -710,8 +1108,33 @@ def run_artifixer3d(args: argparse.Namespace) -> None:
             paths,
             artifixer_frames_dir=args.artifixer_frames_dir,
             base_checkpoint=args.base_checkpoint,
+            fresh_optimizer_on_resume=args.fresh_optimizer_on_resume,
+            geometry_locked=args.geometry_locked,
+            opacity_prune_locked=args.opacity_prune_locked,
+            density_learning_rate=args.density_learning_rate,
+            resume_topology_start_iteration=args.resume_topology_start_iteration,
+            resume_topology_add_relocate_end_iteration=args.resume_topology_add_relocate_end_iteration,
+            resume_topology_perturb_end_iteration=args.resume_topology_perturb_end_iteration,
+            resume_topology_max_gaussians=args.resume_topology_max_gaussians,
+            depth_guided=args.depth_guided,
+            depth_loss_weight=args.depth_loss_weight,
+            single_surface_guided=args.single_surface_guided,
+            single_surface_loss_weight=args.single_surface_loss_weight,
+            single_surface_front_transmittance=args.single_surface_front_transmittance,
+            surface_depth_manifest=args.surface_depth_manifest,
+            geometry_authorization=args.geometry_authorization,
+            color_loop_guided=args.color_loop_guided,
+            color_loop_loss_weight=args.color_loop_loss_weight,
+            balanced_real_override_sampling=args.balanced_real_override_sampling,
+            real_samples_per_override=args.real_samples_per_override,
+            scale_regularization_weight=args.scale_regularization_weight,
+            opacity_regularization_weight=args.opacity_regularization_weight,
+            override_reconstruction_weight=args.override_reconstruction_weight,
+            override_lpips_weight=args.override_lpips_weight,
+            force_sh0_on_resume=args.force_sh0_on_resume,
             config_name=args.config_name,
             steps=args.artifixer3d_steps,
+            checkpoint_iterations=args.checkpoint_iterations,
             use_wandb=args.use_wandb,
             replace=args.replace,
         )
@@ -729,7 +1152,15 @@ def run_artifixer3d(args: argparse.Namespace) -> None:
             render_trajectory_path=render_trajectory_path,
         )
     if "prepare_artifixer3d_plus" in phases:
-        write_artifixer3d_plus_inference_split(scene, paths, render_dir, checkpoint)
+        if args.require_geometry_qc_for_plus:
+            require_passed_phantom_qc(args.geometry_qc_report)
+        write_artifixer3d_plus_inference_split(
+            scene,
+            paths,
+            render_dir,
+            checkpoint,
+            render_frame_count=trajectory_frame_count(render_trajectory_path),
+        )
 
     if "distill" in phases or "render" in phases:
         print(f"artifixer3d_checkpoint={checkpoint}", flush=True)

@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 from typing import Any
 
@@ -281,6 +282,7 @@ class ArtifixerTransformer(nn.Module):
         kv_cache: dict[str, torch.Tensor] | None = None,
         crossattn_cache: dict[str, torch.Tensor | bool] | None = None,
         neighbor_crossattn_cache: dict[str, torch.Tensor | bool] | None = None,
+        neighbor_prope_chunk_cameras: int | None = None,
         current_start: int = 0,
         frame_offset: int = 0,
         return_dict: bool = False,
@@ -526,6 +528,7 @@ class ArtifixerTransformer(nn.Module):
                 kv_cache[i] if kv_cache is not None else None,
                 block_crossattn_cache,
                 block_neighbor_crossattn_cache,
+                neighbor_prope_chunk_cameras,
                 current_start,
                 frame_seqlen,
                 self.prope_cross_attn_src,
@@ -719,6 +722,7 @@ class ArtifixerTransformerBlock(nn.Module):
         kv_cache: dict[str, torch.Tensor] | None,
         crossattn_cache: dict[str, torch.Tensor | bool] | None,
         neighbor_crossattn_cache: dict[str, torch.Tensor | bool] | None,
+        neighbor_prope_chunk_cameras: int | None,
         current_start: int,
         frame_seqlen: int,
         cross_attn_src: PropeDotProductAttention,
@@ -763,22 +767,67 @@ class ArtifixerTransformerBlock(nn.Module):
             c_gate_msa = c_gate_msa.repeat_interleave(hidden_states.shape[1] // c_gate_msa.shape[1], dim=1)
 
         # 1. Self-attention
-        norm_hidden_states = (self.norm1(hidden_states.float()) * (1 + scale_msa) + shift_msa).type_as(hidden_states)
+        if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+            norm_hidden_states = _norm_modulate_chunked(
+                self.norm1,
+                hidden_states,
+                scale=scale_msa,
+                shift=shift_msa,
+                max_sequence_tokens=max(1, frame_seqlen // 8),
+            )
+        else:
+            norm_hidden_states = (self.norm1(hidden_states.float()) * (1 + scale_msa) + shift_msa).type_as(
+                hidden_states
+            )
         if self.opacity_embedding is not None:
-            norm_hidden_states = norm_hidden_states + self.opacity_embedding(opacity_extra_patches)
+            opacity_states = self.opacity_embedding(opacity_extra_patches)
+            if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+                norm_hidden_states.add_(opacity_states)
+                del opacity_states
+            else:
+                norm_hidden_states = norm_hidden_states + opacity_states
         if self.camera_embedding is not None:
-            norm_hidden_states = norm_hidden_states + self.camera_embedding(camera_extra_patches)
+            camera_states = self.camera_embedding(camera_extra_patches)
+            if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+                norm_hidden_states.add_(camera_states)
+                del camera_states
+            else:
+                norm_hidden_states = norm_hidden_states + camera_states
 
         if kv_cache is not None:
-            attn_output = self.attn1(
-                norm_hidden_states,
-                None,
-                None,
-                rotary_emb,
-                kv_cache=kv_cache,
-                current_start=current_start,
-                frame_seqlen=frame_seqlen,
-            )
+            if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+                # WanAttention.forward only delegates to its processor.  Drop
+                # the caller's full target-sized normalization buffer as soon
+                # as Q/K/V projections have consumed it so FA3 can allocate
+                # its equally sized output without an avoidable extra copy.
+                # Release allocator-only fragments first: at this resolution
+                # they can exceed one complete Q/K/V tensor while no single
+                # contiguous cached block is large enough for the projection.
+                torch.cuda.empty_cache()
+                selfattn_input = [norm_hidden_states]
+                del norm_hidden_states
+                attn_output = self.attn1.processor(
+                    self.attn1,
+                    selfattn_input.pop(),
+                    None,
+                    None,
+                    rotary_emb,
+                    kv_cache=kv_cache,
+                    current_start=current_start,
+                    frame_seqlen=frame_seqlen,
+                    memory_bounded=True,
+                )
+            else:
+                attn_output = self.attn1(
+                    norm_hidden_states,
+                    None,
+                    None,
+                    rotary_emb,
+                    kv_cache=kv_cache,
+                    current_start=current_start,
+                    frame_seqlen=frame_seqlen,
+                    memory_bounded=False,
+                )
         else:
             attn_output = self.attn1(
                 norm_hidden_states,
@@ -787,36 +836,257 @@ class ArtifixerTransformerBlock(nn.Module):
                 rotary_emb,
                 block_mask=block_mask,
             )
-        hidden_states = (hidden_states.float() + attn_output * gate_msa).type_as(hidden_states)
+        if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+            hidden_states = _gated_residual_inplace_chunked(
+                hidden_states,
+                attn_output,
+                gate_msa,
+                max_sequence_tokens=frame_seqlen,
+            )
+            del attn_output
+        else:
+            hidden_states = (hidden_states.float() + attn_output * gate_msa).type_as(hidden_states)
 
         # 2. Cross-attention
-        norm_hidden_states = self.norm2(hidden_states.float()).type_as(hidden_states)
+        if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+            norm_hidden_states = _norm_modulate_chunked(
+                self.norm2,
+                hidden_states,
+                max_sequence_tokens=max(1, frame_seqlen // 8),
+            )
+        else:
+            norm_hidden_states = self.norm2(hidden_states.float()).type_as(hidden_states)
 
         if neighbor_hidden_states is not None:
             neighbor_hidden_states = neighbor_hidden_states.type_as(hidden_states)
 
-        attn_output = self.attn2(
-            norm_hidden_states,
-            encoder_hidden_states,
-            None,
-            None,
-            neighbor_hidden_states=neighbor_hidden_states,
-            ignore_neighbors=ignore_neighbors,
-            crossattn_cache=crossattn_cache,
-            neighbor_crossattn_cache=neighbor_crossattn_cache,
-            prope_attn_src=cross_attn_src,
-            prope_attn_tgt=cross_attn_tgt,
-        )
-        hidden_states = hidden_states + attn_output
+        if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+            # WanAttention.forward only delegates to its processor.  Pop the
+            # input from a one-shot holder so neither this frame nor the Wan
+            # wrapper retains the target-sized normalization buffer while the
+            # processor reuses and then releases it as neighbor Q storage.
+            crossattn_input = [norm_hidden_states]
+            del norm_hidden_states
+            attn_output = self.attn2.processor(
+                self.attn2,
+                crossattn_input.pop(),
+                encoder_hidden_states,
+                None,
+                None,
+                neighbor_hidden_states=neighbor_hidden_states,
+                ignore_neighbors=ignore_neighbors,
+                crossattn_cache=crossattn_cache,
+                neighbor_crossattn_cache=neighbor_crossattn_cache,
+                neighbor_prope_chunk_cameras=neighbor_prope_chunk_cameras,
+                prope_attn_src=cross_attn_src,
+                prope_attn_tgt=cross_attn_tgt,
+            )
+            hidden_states.add_(attn_output)
+            del attn_output
+        else:
+            attn_output = self.attn2(
+                norm_hidden_states,
+                encoder_hidden_states,
+                None,
+                None,
+                neighbor_hidden_states=neighbor_hidden_states,
+                ignore_neighbors=ignore_neighbors,
+                crossattn_cache=crossattn_cache,
+                neighbor_crossattn_cache=neighbor_crossattn_cache,
+                neighbor_prope_chunk_cameras=neighbor_prope_chunk_cameras,
+                prope_attn_src=cross_attn_src,
+                prope_attn_tgt=cross_attn_tgt,
+            )
+            hidden_states = hidden_states + attn_output
 
         # 4. Feed-forward
-        norm_hidden_states = (self.norm3(hidden_states.float()) * (1 + c_scale_msa) + c_shift_msa).type_as(
-            hidden_states
-        )
-        ff_output = self.ffn(norm_hidden_states)
-        hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
+        if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+            norm_hidden_states = _norm_modulate_chunked(
+                self.norm3,
+                hidden_states,
+                scale=c_scale_msa,
+                shift=c_shift_msa,
+                max_sequence_tokens=max(1, frame_seqlen // 8),
+            )
+        else:
+            norm_hidden_states = (self.norm3(hidden_states.float()) * (1 + c_scale_msa) + c_shift_msa).type_as(
+                hidden_states
+            )
+        if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+            ff_output = _module_inplace_chunked(
+                self.ffn,
+                norm_hidden_states,
+                max_sequence_tokens=max(1, frame_seqlen // 4),
+            )
+        else:
+            ff_output = self.ffn(norm_hidden_states)
+        if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+            hidden_states = _gated_residual_inplace_chunked(
+                hidden_states,
+                ff_output,
+                c_gate_msa,
+                max_sequence_tokens=frame_seqlen,
+            )
+        else:
+            hidden_states = (hidden_states.float() + ff_output.float() * c_gate_msa).type_as(hidden_states)
 
         return hidden_states
+
+
+def _gated_residual_inplace_chunked(
+    hidden_states: torch.Tensor,
+    update: torch.Tensor,
+    gate: torch.Tensor,
+    *,
+    max_sequence_tokens: int,
+) -> torch.Tensor:
+    """Inference-equivalent gated residual with bounded float32 workspaces."""
+    if torch.is_grad_enabled():
+        raise RuntimeError("in-place gated residual is only valid during inference")
+    if hidden_states.shape != update.shape:
+        raise ValueError("residual tensors must have identical shapes")
+    if hidden_states.ndim != 3 or gate.ndim != 3:
+        raise ValueError("gated residual expects batch/sequence/channel tensors")
+    if gate.shape[0] != hidden_states.shape[0] or gate.shape[2] != hidden_states.shape[2]:
+        raise ValueError("gate batch and channel dimensions must match")
+    if gate.shape[1] not in (1, hidden_states.shape[1]):
+        raise ValueError("gate sequence dimension must be one or match the residual")
+    if max_sequence_tokens <= 0:
+        raise ValueError("max_sequence_tokens must be positive")
+
+    for start in range(0, hidden_states.shape[1], max_sequence_tokens):
+        stop = min(start + max_sequence_tokens, hidden_states.shape[1])
+        destination = hidden_states[:, start:stop]
+        update_chunk = update[:, start:stop]
+        gate_chunk = gate if gate.shape[1] == 1 else gate[:, start:stop]
+        transformed = (destination.float() + update_chunk.float() * gate_chunk).to(destination.dtype)
+        destination.copy_(transformed)
+    return hidden_states
+
+
+def _norm_modulate_chunked(
+    norm: nn.Module,
+    hidden_states: torch.Tensor,
+    *,
+    scale: torch.Tensor | None = None,
+    shift: torch.Tensor | None = None,
+    max_sequence_tokens: int,
+) -> torch.Tensor:
+    """Apply per-token normalization/modulation with bounded float32 memory."""
+    if torch.is_grad_enabled():
+        raise RuntimeError("chunked normalization is only valid during inference")
+    if hidden_states.ndim != 3:
+        raise ValueError("chunked normalization expects batch/sequence/channel tensors")
+    if max_sequence_tokens <= 0:
+        raise ValueError("max_sequence_tokens must be positive")
+    for name, value in (("scale", scale), ("shift", shift)):
+        if value is None:
+            continue
+        if value.ndim != 3 or value.shape[0] != hidden_states.shape[0] or value.shape[2] != hidden_states.shape[2]:
+            raise ValueError(f"{name} batch and channel dimensions must match")
+        if value.shape[1] not in (1, hidden_states.shape[1]):
+            raise ValueError(f"{name} sequence dimension must be one or match the input")
+
+    # Use an explicit contiguous buffer.  The cross-attention path later
+    # reuses this storage as [batch, sequence, heads, head_dim]; preserving an
+    # arbitrary upstream memory format would make FA3 allocate a full copy.
+    output = torch.empty(
+        hidden_states.shape,
+        dtype=hidden_states.dtype,
+        device=hidden_states.device,
+    )
+    for start in range(0, hidden_states.shape[1], max_sequence_tokens):
+        stop = min(start + max_sequence_tokens, hidden_states.shape[1])
+        transformed = norm(hidden_states[:, start:stop].float())
+        if scale is not None:
+            scale_chunk = scale if scale.shape[1] == 1 else scale[:, start:stop]
+            transformed = transformed * (1 + scale_chunk)
+        if shift is not None:
+            shift_chunk = shift if shift.shape[1] == 1 else shift[:, start:stop]
+            transformed = transformed + shift_chunk
+        output[:, start:stop].copy_(transformed.to(hidden_states.dtype))
+    return output
+
+
+def _norm_inplace_chunked(
+    norm: nn.Module,
+    hidden_states: torch.Tensor,
+    *,
+    max_sequence_tokens: int,
+) -> torch.Tensor:
+    """Normalize independent sequence rows in place during inference."""
+    if torch.is_grad_enabled():
+        raise RuntimeError("in-place normalization is only valid during inference")
+    if hidden_states.ndim != 3:
+        raise ValueError("in-place normalization expects batch/sequence/channel tensors")
+    if max_sequence_tokens <= 0:
+        raise ValueError("max_sequence_tokens must be positive")
+    for start in range(0, hidden_states.shape[1], max_sequence_tokens):
+        stop = min(start + max_sequence_tokens, hidden_states.shape[1])
+        destination = hidden_states[:, start:stop]
+        destination.copy_(norm(destination))
+    return hidden_states
+
+
+def _module_inplace_chunked(
+    module: nn.Module,
+    hidden_states: torch.Tensor,
+    *,
+    max_sequence_tokens: int,
+) -> torch.Tensor:
+    """Run an independent per-token module in place with bounded activations."""
+    if torch.is_grad_enabled():
+        raise RuntimeError("in-place module chunking is only valid during inference")
+    if hidden_states.ndim != 3:
+        raise ValueError("in-place module chunking expects batch/sequence/channel tensors")
+    if max_sequence_tokens <= 0:
+        raise ValueError("max_sequence_tokens must be positive")
+    for start in range(0, hidden_states.shape[1], max_sequence_tokens):
+        stop = min(start + max_sequence_tokens, hidden_states.shape[1])
+        destination = hidden_states[:, start:stop]
+        transformed = module(destination)
+        if transformed.shape != destination.shape:
+            raise ValueError("chunked module output must match its input shape")
+        destination.copy_(transformed)
+    return hidden_states
+
+
+def _dispatch_attention_query_inplace_chunked(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    attention_mask: torch.Tensor | None,
+    dropout_p: float,
+    is_causal: bool,
+    backend,
+    max_sequence_tokens: int,
+) -> torch.Tensor:
+    """Run exact attention in query chunks, reusing Q storage for output."""
+    if torch.is_grad_enabled():
+        raise RuntimeError("in-place query chunking is only valid during inference")
+    if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
+        raise ValueError("chunked attention expects [batch, sequence, heads, channels]")
+    if max_sequence_tokens <= 0:
+        raise ValueError("max_sequence_tokens must be positive")
+    if attention_mask is not None:
+        raise ValueError("memory-bounded query chunking currently requires no attention mask")
+    for start in range(0, query.shape[1], max_sequence_tokens):
+        stop = min(start + max_sequence_tokens, query.shape[1])
+        destination = query[:, start:stop]
+        transformed = dispatch_attention_fn(
+            destination,
+            key,
+            value,
+            attn_mask=None,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            backend=backend,
+        )
+        if transformed.shape != destination.shape:
+            raise ValueError("chunked attention output must match its query chunk")
+        destination.copy_(transformed)
+    return query
 
 
 def _apply_rotary_emb(
@@ -833,6 +1103,34 @@ def _apply_rotary_emb(
     return out.type_as(hidden_states)
 
 
+def _apply_rotary_emb_inplace_chunked(
+    hidden_states: torch.Tensor,
+    freqs_cos: torch.Tensor,
+    freqs_sin: torch.Tensor,
+    *,
+    max_sequence_tokens: int,
+) -> torch.Tensor:
+    """Apply RoPE in place over independent sequence-token chunks."""
+    if torch.is_grad_enabled():
+        raise RuntimeError("in-place rotary embedding is only valid during inference")
+    if hidden_states.ndim != 4 or freqs_cos.shape != freqs_sin.shape:
+        raise ValueError("rotary tensors have incompatible shapes")
+    if freqs_cos.ndim != 4 or freqs_cos.shape[1] != hidden_states.shape[1]:
+        raise ValueError("rotary sequence length must match hidden states")
+    if max_sequence_tokens <= 0:
+        raise ValueError("max_sequence_tokens must be positive")
+    for start in range(0, hidden_states.shape[1], max_sequence_tokens):
+        stop = min(start + max_sequence_tokens, hidden_states.shape[1])
+        destination = hidden_states[:, start:stop]
+        transformed = _apply_rotary_emb(
+            destination,
+            freqs_cos[:, start:stop],
+            freqs_sin[:, start:stop],
+        )
+        destination.copy_(transformed)
+    return hidden_states
+
+
 class ArtifixerCrossAttnProcessor:
     _attention_backend = None
 
@@ -847,6 +1145,7 @@ class ArtifixerCrossAttnProcessor:
         ignore_neighbors: bool = False,
         crossattn_cache: dict[str, torch.Tensor | bool] | None = None,
         neighbor_crossattn_cache: dict[str, torch.Tensor | bool] | None = None,
+        neighbor_prope_chunk_cameras: int | None = None,
         prope_attn_src: PropeDotProductAttention | None = None,
         prope_attn_tgt: PropeDotProductAttention | None = None,
     ) -> torch.Tensor:
@@ -874,16 +1173,27 @@ class ArtifixerCrossAttnProcessor:
         # Add neighbor cross-attention
         hidden_states_neighbor = None
         if neighbor_hidden_states is not None:
+            neighbor_cache_is_prope_transformed = False
             if neighbor_crossattn_cache is not None:
                 if not neighbor_crossattn_cache["is_init"]:
                     key_neighbor, value_neighbor = _get_added_kv_projections(attn, neighbor_hidden_states)
-                    key_neighbor = attn.norm_added_k(key_neighbor)
+                    if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+                        key_neighbor = _norm_inplace_chunked(
+                            attn.norm_added_k,
+                            key_neighbor,
+                            max_sequence_tokens=prope_attn_tgt.patches_x * prope_attn_tgt.patches_y,
+                        )
+                    else:
+                        key_neighbor = attn.norm_added_k(key_neighbor)
                     neighbor_crossattn_cache["k"] = key_neighbor
                     neighbor_crossattn_cache["v"] = value_neighbor
                     neighbor_crossattn_cache["is_init"] = True
                 else:
                     key_neighbor = neighbor_crossattn_cache["k"]
                     value_neighbor = neighbor_crossattn_cache["v"]
+                neighbor_cache_is_prope_transformed = bool(
+                    neighbor_crossattn_cache.get("prope_transformed", False)
+                )
             else:
                 key_neighbor, value_neighbor = _get_added_kv_projections(attn, neighbor_hidden_states)
                 key_neighbor = attn.norm_added_k(key_neighbor)
@@ -893,53 +1203,129 @@ class ArtifixerCrossAttnProcessor:
             value_neighbor = value_neighbor.unflatten(2, (attn.heads, -1))
             query_dtype = query.dtype
 
-            query_neighbor = prope_attn_src._apply_to_q(query.transpose(2, 1).float()).transpose(2, 1).to(query_dtype)
-            key_neighbor = (
-                prope_attn_tgt._apply_to_kv(key_neighbor.transpose(2, 1).float()).transpose(2, 1).to(query_dtype)
-            )
-            value_neighbor = (
-                prope_attn_tgt._apply_to_kv(value_neighbor.transpose(2, 1).float()).transpose(2, 1).to(query_dtype)
-            )
+            if neighbor_prope_chunk_cameras is not None:
+                # Preserve the full neighbor K/V sequence while bounding the
+                # temporary float32 PRoPE allocations.  Attention still sees
+                # every query, key and value together after these exact
+                # per-camera coordinate transforms.
+                query_neighbor_buffer = hidden_states.unflatten(2, (attn.heads, -1)).transpose(2, 1)
+                query_neighbor = prope_attn_src._apply_to_q_chunked(
+                    query.transpose(2, 1),
+                    neighbor_prope_chunk_cameras,
+                    output=query_neighbor_buffer,
+                ).transpose(2, 1)
+                if not neighbor_cache_is_prope_transformed:
+                    key_neighbor = prope_attn_tgt._apply_to_kv_inplace_chunked(
+                        key_neighbor.transpose(2, 1), neighbor_prope_chunk_cameras
+                    ).transpose(2, 1)
+                    value_neighbor = prope_attn_tgt._apply_to_kv_inplace_chunked(
+                        value_neighbor.transpose(2, 1), neighbor_prope_chunk_cameras
+                    ).transpose(2, 1)
+                    if neighbor_crossattn_cache is not None:
+                        neighbor_crossattn_cache["prope_transformed"] = True
+            else:
+                query_neighbor = (
+                    prope_attn_src._apply_to_q(query.transpose(2, 1).float())
+                    .transpose(2, 1)
+                    .to(query_dtype)
+                )
+                key_neighbor = (
+                    prope_attn_tgt._apply_to_kv(key_neighbor.transpose(2, 1).float())
+                    .transpose(2, 1)
+                    .to(query_dtype)
+                )
+                value_neighbor = (
+                    prope_attn_tgt._apply_to_kv(value_neighbor.transpose(2, 1).float())
+                    .transpose(2, 1)
+                    .to(query_dtype)
+                )
 
-            hidden_states_neighbor = dispatch_attention_fn(
-                query_neighbor,
-                key_neighbor,
-                value_neighbor,
-                attn_mask=None,
-                dropout_p=0.0,
-                is_causal=False,
-                backend=self._attention_backend,
-            )
+            if neighbor_prope_chunk_cameras is not None:
+                hidden_states_neighbor = _dispatch_attention_query_inplace_chunked(
+                    query_neighbor,
+                    key_neighbor,
+                    value_neighbor,
+                    attention_mask=None,
+                    dropout_p=0.0,
+                    is_causal=False,
+                    backend=self._attention_backend,
+                    max_sequence_tokens=min(2048, query_neighbor.shape[1]),
+                )
+                del query_neighbor_buffer, hidden_states
+            else:
+                hidden_states_neighbor = dispatch_attention_fn(
+                    query_neighbor,
+                    key_neighbor,
+                    value_neighbor,
+                    attn_mask=None,
+                    dropout_p=0.0,
+                    is_causal=False,
+                    backend=self._attention_backend,
+                )
 
             hidden_states_neighbor_dtype = hidden_states_neighbor.dtype
-            hidden_states_neighbor = (
-                prope_attn_src._apply_to_o(hidden_states_neighbor.transpose(2, 1).float())
-                .transpose(2, 1)
-                .to(hidden_states_neighbor_dtype)
-            )
+            if neighbor_prope_chunk_cameras is not None:
+                hidden_states_neighbor = prope_attn_src._apply_to_o_inplace_chunked(
+                    hidden_states_neighbor.transpose(2, 1), neighbor_prope_chunk_cameras
+                ).transpose(2, 1)
+            else:
+                hidden_states_neighbor = (
+                    prope_attn_src._apply_to_o(hidden_states_neighbor.transpose(2, 1).float())
+                    .transpose(2, 1)
+                    .to(hidden_states_neighbor_dtype)
+                )
 
             hidden_states_neighbor = hidden_states_neighbor.flatten(2, 3)
 
             hidden_states_neighbor = hidden_states_neighbor.type_as(query)
 
-        hidden_states = dispatch_attention_fn(
-            query,
-            key,
-            value,
-            attn_mask=attention_mask,
-            dropout_p=0.0,
-            is_causal=False,
-            backend=self._attention_backend,
-        )
+        if neighbor_prope_chunk_cameras is not None:
+            hidden_states = _dispatch_attention_query_inplace_chunked(
+                query,
+                key,
+                value,
+                attention_mask=attention_mask,
+                dropout_p=0.0,
+                is_causal=False,
+                backend=self._attention_backend,
+                max_sequence_tokens=min(2048, query.shape[1]),
+            )
+        else:
+            hidden_states = dispatch_attention_fn(
+                query,
+                key,
+                value,
+                attn_mask=attention_mask,
+                dropout_p=0.0,
+                is_causal=False,
+                backend=self._attention_backend,
+            )
 
         hidden_states = hidden_states.flatten(2, 3)
         hidden_states = hidden_states.type_as(query)
 
         if hidden_states_neighbor is not None:
-            hidden_states = hidden_states + hidden_states_neighbor * (0 if ignore_neighbors else 1)
+            if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+                if not ignore_neighbors:
+                    hidden_states.add_(hidden_states_neighbor)
+                del hidden_states_neighbor
+            else:
+                hidden_states = hidden_states + hidden_states_neighbor * (0 if ignore_neighbors else 1)
 
-        hidden_states = attn.to_out[0](hidden_states)
-        hidden_states = attn.to_out[1](hidden_states)
+        if neighbor_prope_chunk_cameras is not None and not torch.is_grad_enabled():
+            hidden_states = _module_inplace_chunked(
+                attn.to_out[0],
+                hidden_states,
+                max_sequence_tokens=min(2048, hidden_states.shape[1]),
+            )
+            hidden_states = _module_inplace_chunked(
+                attn.to_out[1],
+                hidden_states,
+                max_sequence_tokens=min(2048, hidden_states.shape[1]),
+            )
+        else:
+            hidden_states = attn.to_out[0](hidden_states)
+            hidden_states = attn.to_out[1](hidden_states)
         return hidden_states
 
 
@@ -1034,19 +1420,61 @@ class KvCacheWanSelfAttnProcessor:
         kv_cache: dict[str, torch.Tensor],
         current_start: int,
         frame_seqlen: int,
+        memory_bounded: bool = False,
     ) -> torch.Tensor:
-        query, key, value = _get_qkv_projections(attn, hidden_states, None)
+        if memory_bounded and not torch.is_grad_enabled():
+            # Diffusers projects Q/K/V in one helper and retains all three.
+            # Purge allocator-only fragments between the exact same linear
+            # projections so the final V tensor can obtain a contiguous block.
+            query = attn.to_q(hidden_states)
+            torch.cuda.empty_cache()
+            key = attn.to_k(hidden_states)
+            torch.cuda.empty_cache()
+            value = _module_inplace_chunked(
+                attn.to_v,
+                hidden_states,
+                max_sequence_tokens=max(1, min(2048, frame_seqlen // 8)),
+            )
+            del hidden_states
+        else:
+            query, key, value = _get_qkv_projections(attn, hidden_states, None)
 
-        query = attn.norm_q(query)
-        key = attn.norm_k(key)
+        if memory_bounded and not torch.is_grad_enabled():
+            norm_chunk = max(1, frame_seqlen // 8)
+            query = _norm_inplace_chunked(
+                attn.norm_q,
+                query,
+                max_sequence_tokens=norm_chunk,
+            )
+            key = _norm_inplace_chunked(
+                attn.norm_k,
+                key,
+                max_sequence_tokens=norm_chunk,
+            )
+        else:
+            query = attn.norm_q(query)
+            key = attn.norm_k(key)
 
         query = query.unflatten(2, (attn.heads, -1))
         key = key.unflatten(2, (attn.heads, -1))
         value = value.unflatten(2, (attn.heads, -1))
 
         if rotary_emb is not None:
-            query = _apply_rotary_emb(query, *rotary_emb)
-            key = _apply_rotary_emb(key, *rotary_emb)
+            if memory_bounded and not torch.is_grad_enabled():
+                rotary_chunk = max(1, frame_seqlen // 8)
+                query = _apply_rotary_emb_inplace_chunked(
+                    query,
+                    *rotary_emb,
+                    max_sequence_tokens=rotary_chunk,
+                )
+                key = _apply_rotary_emb_inplace_chunked(
+                    key,
+                    *rotary_emb,
+                    max_sequence_tokens=rotary_chunk,
+                )
+            else:
+                query = _apply_rotary_emb(query, *rotary_emb)
+                key = _apply_rotary_emb(key, *rotary_emb)
 
         # With CP each rank's cache stores 1/cp_size of the total frames.
         # Adjust current_start to local indexing and scale sink/window sizes.
@@ -1121,20 +1549,28 @@ class KvCacheWanSelfAttnProcessor:
 
         if local_attn_size != -1:
             window_tokens = (local_attn_size - local_sink_size) * frame_seqlen
-            cached_k = torch.cat(
-                [
-                    kv_cache["k"][:, :sink_tokens],
-                    kv_cache["k"][:, max(sink_tokens, local_end_index - window_tokens) : local_end_index],
-                ],
-                dim=1,
-            )
-            cached_v = torch.cat(
-                [
-                    kv_cache["v"][:, :sink_tokens],
-                    kv_cache["v"][:, max(sink_tokens, local_end_index - window_tokens) : local_end_index],
-                ],
-                dim=1,
-            )
+            recent_start = max(sink_tokens, local_end_index - window_tokens)
+            if recent_start == sink_tokens:
+                # Sink and local window are one contiguous cache prefix.  A
+                # view is identical to concatenating both adjacent slices and
+                # avoids two target-sized K/V copies.
+                cached_k = kv_cache["k"][:, :local_end_index]
+                cached_v = kv_cache["v"][:, :local_end_index]
+            else:
+                cached_k = torch.cat(
+                    [
+                        kv_cache["k"][:, :sink_tokens],
+                        kv_cache["k"][:, recent_start:local_end_index],
+                    ],
+                    dim=1,
+                )
+                cached_v = torch.cat(
+                    [
+                        kv_cache["v"][:, :sink_tokens],
+                        kv_cache["v"][:, recent_start:local_end_index],
+                    ],
+                    dim=1,
+                )
         else:
             cached_k = kv_cache["k"][:, :local_end_index]
             cached_v = kv_cache["v"][:, :local_end_index]
@@ -1151,21 +1587,52 @@ class KvCacheWanSelfAttnProcessor:
             cached_k = torch.cat(gathered_k, dim=1)
             cached_v = torch.cat(gathered_v, dim=1)
 
-        hidden_states = dispatch_attention_fn(
-            query,
-            cached_k,
-            cached_v,
-            attn_mask=attention_mask,
-            dropout_p=0.0,
-            is_causal=False,
-            backend=self._attention_backend,
-        )
+        if memory_bounded and not torch.is_grad_enabled():
+            # New K/V have already been copied into the persistent cache.
+            del key, value
+
+        if memory_bounded and not torch.is_grad_enabled():
+            hidden_states = _dispatch_attention_query_inplace_chunked(
+                query,
+                cached_k,
+                cached_v,
+                attention_mask=attention_mask,
+                dropout_p=0.0,
+                is_causal=False,
+                backend=self._attention_backend,
+                max_sequence_tokens=max(1, min(2048, frame_seqlen // 8)),
+            )
+        else:
+            hidden_states = dispatch_attention_fn(
+                query,
+                cached_k,
+                cached_v,
+                attn_mask=attention_mask,
+                dropout_p=0.0,
+                is_causal=False,
+                backend=self._attention_backend,
+            )
 
         hidden_states = hidden_states.flatten(2, 3)
         hidden_states = hidden_states.type_as(query)
 
-        hidden_states = attn.to_out[0](hidden_states)
-        hidden_states = attn.to_out[1](hidden_states)
+        if memory_bounded and not torch.is_grad_enabled():
+            del query, cached_k, cached_v
+
+        if memory_bounded and not torch.is_grad_enabled():
+            hidden_states = _module_inplace_chunked(
+                attn.to_out[0],
+                hidden_states,
+                max_sequence_tokens=min(2048, hidden_states.shape[1]),
+            )
+            hidden_states = _module_inplace_chunked(
+                attn.to_out[1],
+                hidden_states,
+                max_sequence_tokens=min(2048, hidden_states.shape[1]),
+            )
+        else:
+            hidden_states = attn.to_out[0](hidden_states)
+            hidden_states = attn.to_out[1](hidden_states)
         return hidden_states
 
 

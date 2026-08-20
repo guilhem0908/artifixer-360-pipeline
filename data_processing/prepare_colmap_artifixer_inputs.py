@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 """Prepare a COLMAP scene for ArtiFixer inference.
 
@@ -46,7 +47,12 @@ from data_processing.render_3dgrut_colmap import (
     render_outputs_complete,
     selected_indices_for_render,
 )
-from data_processing.sparse_recon.metric_alignment import align_colmap_to_metric_scale
+from data_processing.sparse_recon.metric_alignment import (
+    align_colmap_to_metric_scale,
+    canonical_selected_image_names,
+    validate_metric_scale_provenance,
+    write_metric_scale_artifacts,
+)
 from data_processing.threedgrut_training import DEFAULT_THREEDGRUT_CONFIG_DIR, train_3dgrut
 
 DEFAULT_THREEDGRUT_CONFIG = "apps/colmap_3dgut_sparse_mcmc"
@@ -152,13 +158,27 @@ def read_selected_image_names(path: Path) -> list[str]:
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
 
 
-def resolve_selected_indices(args: argparse.Namespace, images: Sequence[Image]) -> list[int]:
+def requested_selected_image_names(args: argparse.Namespace) -> list[str] | None:
+    if args.selected_image_names_file is None:
+        return None
+    return canonical_selected_image_names(read_selected_image_names(args.selected_image_names_file))
+
+
+def resolve_selected_indices(
+    args: argparse.Namespace,
+    images: Sequence[Image],
+    selected_image_names: Sequence[str] | None = None,
+) -> list[int]:
     if args.selected_image_names_file is not None:
         name_to_index = {Path(image.name).name: index for index, image in enumerate(images)}
-        names = read_selected_image_names(args.selected_image_names_file)
-        basenames = [Path(name).name for name in names]
+        basenames = canonical_selected_image_names(
+            selected_image_names
+            if selected_image_names is not None
+            else read_selected_image_names(args.selected_image_names_file)
+        )
         missing = [name for name in basenames if name not in name_to_index]
-        assert not missing, f"Selected image names are not in the COLMAP model: {missing}"
+        if missing:
+            raise ValueError(f"Selected image names are not in the COLMAP model: {missing}")
         selected = [name_to_index[name] for name in basenames]
     else:
         selected = list(range(len(images)))
@@ -279,6 +299,35 @@ def write_colmap_images(path: Path, images: Sequence[Image]) -> None:
                 fid.write(struct.pack("<ddq", float(xy[0]), float(xy[1]), int(point3d_id)))
 
 
+def camera_for_threedgrut(camera: Camera) -> Camera:
+    """Represent a supported COLMAP camera with 3DGRUT's OPENCV model.
+
+    The 3DGRUT dataset loader handles distorted perspective cameras through
+    its OPENCV branch, but it does not have direct SIMPLE_RADIAL or RADIAL
+    branches.  These COLMAP models are exact parameter subsets of OPENCV, so
+    expanding their absent coefficients to zero preserves the camera rays.
+    Canonicalizing pinhole models as well keeps the prepared sparse model and
+    the ArtiFixer transforms.json on the same camera-model convention.
+    """
+    if camera.model == "SIMPLE_PINHOLE":
+        f, cx, cy = camera.params
+        params = [f, f, cx, cy, 0.0, 0.0, 0.0, 0.0]
+    elif camera.model == "PINHOLE":
+        fx, fy, cx, cy = camera.params
+        params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
+    elif camera.model == "SIMPLE_RADIAL":
+        f, cx, cy, k1 = camera.params
+        params = [f, f, cx, cy, k1, 0.0, 0.0, 0.0]
+    elif camera.model == "RADIAL":
+        f, cx, cy, k1, k2 = camera.params
+        params = [f, f, cx, cy, k1, k2, 0.0, 0.0]
+    elif camera.model == "OPENCV":
+        params = camera.params
+    else:
+        assert False, f"Unsupported camera model for 3DGRUT preparation: {camera.model}"
+    return camera._replace(model="OPENCV", params=np.asarray(params, dtype=np.float64))
+
+
 def image_basename(image: Image) -> str:
     return Path(image.name).name
 
@@ -297,7 +346,22 @@ def symlink_images(source_image_dir: Path, target_image_dir: Path, images: Seque
 
 
 def write_sparse_model(source_sparse_dir: Path, target_sparse_dir: Path, scene: ColmapScene) -> None:
-    write_colmap_cameras(target_sparse_dir / "cameras.bin", scene.cameras)
+    prepared_cameras = [camera_for_threedgrut(camera) for camera in scene.cameras]
+    write_colmap_cameras(
+        target_sparse_dir / "cameras.bin",
+        prepared_cameras,
+    )
+    roundtrip = read_colmap_intrinsics_binary(target_sparse_dir / "cameras.bin")
+    assert set(roundtrip) == {camera.id for camera in prepared_cameras}, (
+        "Prepared 3DGRUT camera IDs changed during cameras.bin serialization"
+    )
+    for expected in prepared_cameras:
+        actual = roundtrip[expected.id]
+        assert actual.model == "OPENCV", (
+            f"Prepared 3DGRUT camera {expected.id} is {actual.model}, expected OPENCV"
+        )
+        assert (actual.width, actual.height) == (expected.width, expected.height)
+        np.testing.assert_array_equal(actual.params, expected.params)
     write_colmap_images(target_sparse_dir / "images.bin", scene.images)
     (target_sparse_dir / "points3D.bin").symlink_to((source_sparse_dir / "points3D.bin").resolve())
 
@@ -501,7 +565,7 @@ def require_reconstruction_checkpoint(paths: PreparedPaths, args: argparse.Names
 
 
 def threedgrut_train_overrides(paths: PreparedPaths, args: argparse.Namespace) -> list[str]:
-    return [
+    overrides = [
         f"path={paths.threedgrut_input_dir}",
         f"out_dir={paths.reconstruction_run_dir}",
         f"selected_indices_file={paths.selected_indices_path}",
@@ -511,6 +575,10 @@ def threedgrut_train_overrides(paths: PreparedPaths, args: argparse.Namespace) -
         f"n_iterations={args.reconstruction_steps}",
         f"checkpoint.iterations=[{args.reconstruction_steps}]",
     ]
+    if args.reconstruction_resume_checkpoint is not None:
+        overrides.append(f"resume={args.reconstruction_resume_checkpoint}")
+        overrides.append("resume_optimizer=True")
+    return overrides
 
 
 def run_reconstruction(args: argparse.Namespace, paths: PreparedPaths) -> bool:
@@ -644,7 +712,16 @@ def render_trajectory(
     return trajectory
 
 
-def run_metric_alignment(args: argparse.Namespace, paths: PreparedPaths) -> None:
+def run_metric_alignment(
+    args: argparse.Namespace,
+    paths: PreparedPaths,
+    selected_image_names: Sequence[str] | None = None,
+) -> None:
+    if selected_image_names is None and args.selected_image_names_file is not None:
+        selected_image_names = requested_selected_image_names(args)
+    if selected_image_names is not None:
+        selected_image_names = canonical_selected_image_names(selected_image_names)
+
     scale_info = paths.scale_dir / "scale_info.txt"
     if args.metric_scale is not None:
         if scale_info.is_file() and not args.replace:
@@ -653,27 +730,38 @@ def run_metric_alignment(args: argparse.Namespace, paths: PreparedPaths) -> None
                 f"Existing metric scale at {scale_info} is {existing_scale}, "
                 f"but --metric_scale={args.metric_scale}. Re-run with --replace."
             )
+            if selected_image_names is not None:
+                validate_metric_scale_provenance(paths.scale_dir, existing_scale, selected_image_names)
             print(f"Skipping metric alignment; found {scale_info}", flush=True)
             return
-        paths.scale_dir.mkdir(parents=True, exist_ok=True)
-        scale_info.write_text(f"Scale factor: {args.metric_scale}\n")
+        write_metric_scale_artifacts(paths.scale_dir, args.metric_scale, selected_image_names)
         return
 
     if scale_info.is_file() and not args.replace:
+        if selected_image_names is not None:
+            validate_metric_scale_provenance(
+                paths.scale_dir,
+                read_metric_scale(scale_info),
+                selected_image_names,
+            )
         print(f"Skipping metric alignment; found {scale_info}", flush=True)
         return
 
-    colmap_dir = args.colmap_dir / "sparse/0"
+    colmap_dir = (
+        paths.eval_scene_dir / "sparse/0"
+        if selected_image_names is not None
+        else args.colmap_dir / "sparse/0"
+    )
     image_dir = paths.eval_scene_dir / "images"
-    paths.scale_dir.mkdir(parents=True, exist_ok=True)
     scale, _, _ = align_colmap_to_metric_scale(
         colmap_dir=colmap_dir,
         image_dir=image_dir,
         output_dir=paths.scale_dir,
         debug=False,
         downsample_factor=1,
+        selected_image_names=selected_image_names,
     )
-    scale_info.write_text(f"Scale factor: {scale}\n")
+    write_metric_scale_artifacts(paths.scale_dir, scale, selected_image_names)
 
 
 def generate_caption(args: argparse.Namespace, paths: PreparedPaths) -> None:
@@ -774,6 +862,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--reconstruction_resume_checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Optional 3DGRUT checkpoint used to continue reconstruction training up to "
+            "--reconstruction_steps. Unlike --reconstruction_checkpoint, this does not skip training."
+        ),
+    )
+    parser.add_argument(
         "--metric_scale",
         type=float,
         default=None,
@@ -792,6 +889,12 @@ def prepare_colmap_scene(args: argparse.Namespace) -> None:
         args.selected_image_names_file = args.selected_image_names_file.expanduser().resolve()
     if args.reconstruction_checkpoint is not None:
         args.reconstruction_checkpoint = args.reconstruction_checkpoint.expanduser().resolve()
+    if args.reconstruction_resume_checkpoint is not None:
+        args.reconstruction_resume_checkpoint = args.reconstruction_resume_checkpoint.expanduser().resolve()
+        if not args.reconstruction_resume_checkpoint.is_file():
+            raise FileNotFoundError(args.reconstruction_resume_checkpoint)
+    if args.reconstruction_checkpoint is not None and args.reconstruction_resume_checkpoint is not None:
+        raise ValueError("use only one of --reconstruction_checkpoint and --reconstruction_resume_checkpoint")
     if args.trajectory_path is not None:
         args.trajectory_path = args.trajectory_path.expanduser().resolve()
         assert "render" in phases, "--trajectory_path requires the render phase"
@@ -800,7 +903,8 @@ def prepare_colmap_scene(args: argparse.Namespace) -> None:
     require_unique_basenames(scene.images)
     scene = scale_colmap_scene_to_images(image_dir, scene)
 
-    selected_indices = resolve_selected_indices(args, scene.images)
+    selected_image_names = requested_selected_image_names(args)
+    selected_indices = resolve_selected_indices(args, scene.images, selected_image_names)
     paths = prepared_paths(args.output_root, args.output_root.name, args.reconstruction_steps)
     paths.scene_root.mkdir(parents=True, exist_ok=True)
 
@@ -822,7 +926,7 @@ def prepare_colmap_scene(args: argparse.Namespace) -> None:
     else:
         trajectory = None
     if "scale" in phases:
-        run_metric_alignment(args, paths)
+        run_metric_alignment(args, paths, selected_image_names)
     if "caption" in phases:
         generate_caption(args, paths)
     scale = metric_scale(args, paths)

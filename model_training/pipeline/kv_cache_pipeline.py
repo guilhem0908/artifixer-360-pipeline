@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 import gc
 import logging
@@ -104,7 +105,12 @@ class ArtifixerKvCachePipeline(ArtifixerPipelineBase):
         show_progress: bool = False,
         progress_bar_leave: bool = True,
         max_neighbors_per_encode: int | None = None,
+        noise_ids: torch.Tensor | None = None,
+        noise_seed: int = 0,
+        neighbor_prope_chunk_cameras: int | None = None,
     ) -> torch.Tensor:
+        if noise_ids is not None:
+            raise ValueError("global deterministic noise ids are currently supported only by bidirectional inference")
         if negative_prompt is not None:
             logger.warning("KV-cache pipeline does not support classifier-free guidance; negative_prompt is ignored.")
         if text_guidance_scale != 5.0:
@@ -126,6 +132,7 @@ class ArtifixerKvCachePipeline(ArtifixerPipelineBase):
             show_progress,
             progress_bar_leave,
             max_neighbors_per_encode,
+            neighbor_prope_chunk_cameras,
         )
         return self.decode_latents_to_video(latents)
 
@@ -145,6 +152,7 @@ class ArtifixerKvCachePipeline(ArtifixerPipelineBase):
         show_progress: bool = False,
         progress_bar_leave: bool = True,
         max_neighbors_per_encode: int | None = None,
+        neighbor_prope_chunk_cameras: int | None = None,
     ) -> torch.Tensor:
         condition = self.encode_video_frames(rendered_rgb.to(self.vae.device)).cpu()
 
@@ -173,9 +181,10 @@ class ArtifixerKvCachePipeline(ArtifixerPipelineBase):
             neighbor_Ks,
             prompt_embeds,
             num_inference_steps,
-            False,
-            show_progress,
-            progress_bar_leave,
+            use_exit_flag=False,
+            show_progress=show_progress,
+            progress_bar_leave=progress_bar_leave,
+            neighbor_prope_chunk_cameras=neighbor_prope_chunk_cameras,
         )
 
     @torch.no_grad()
@@ -207,6 +216,7 @@ class ArtifixerKvCachePipeline(ArtifixerPipelineBase):
         ignore_neighbors: bool = False,
         show_progress: bool = False,
         progress_bar_leave: bool = True,
+        neighbor_prope_chunk_cameras: int | None = None,
     ) -> torch.Tensor:
         batch_size, _, latent_num_frames, latent_height, latent_width = condition.shape
         p_t, p_h, p_w = self.transformer.patch_size
@@ -275,6 +285,7 @@ class ArtifixerKvCachePipeline(ArtifixerPipelineBase):
                 neighbor_crossattn_cache=self.neighbor_crossattn_cache,
                 current_start=current_start_frame * frame_seq_length,
                 frame_offset=current_start_frame,
+                neighbor_prope_chunk_cameras=neighbor_prope_chunk_cameras,
                 return_dict=False,
             )
 

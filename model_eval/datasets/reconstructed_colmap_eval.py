@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 """
 Evaluation dataset for COLMAP-scene reconstruction renders.
@@ -25,6 +26,7 @@ from zipfile import ZipFile
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 from model_training.data.scene_utils import scene_zip_member
@@ -32,6 +34,7 @@ from model_training.data.utils import (
     InferencePair,
     NeighborSelectionMode,
     compute_camera_rays,
+    equirectangular_camera_rays_from_w2cs,
     generate_inference_pairs,
     load_encoded_prompt,
     load_indexed_frames,
@@ -40,6 +43,30 @@ from model_training.data.utils import (
 )
 
 DEFAULT_RECONSTRUCTED_COLMAP_NUM_VIEWS = 12
+
+
+def resize_frames_to_spatial_shape(frames: torch.Tensor, spatial_shape: tuple[int, int]) -> torch.Tensor:
+    """Resize RGB frames to the target grid used by ArtiFixer's cross-attention.
+
+    PRoPE applies one shared patch grid to rendered targets and their selected
+    neighbor images.  Prepared trajectory renders may intentionally use a
+    different resolution or aspect ratio from the real COLMAP anchors, so the
+    neighbor tensor must be sampled onto the rendered target grid.  Camera
+    intrinsics are stored normalized by image width/height and therefore stay
+    valid under this resize.
+    """
+    target_height, target_width = spatial_shape
+    if target_height <= 0 or target_width <= 0:
+        raise ValueError(f"spatial_shape must be positive, got {spatial_shape}")
+    if frames.shape[-2:] == spatial_shape:
+        return frames
+    return F.interpolate(
+        frames,
+        size=spatial_shape,
+        mode="bilinear",
+        align_corners=False,
+        antialias=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -54,6 +81,7 @@ class ReconstructedColmapScene:
     prompt_paths: list[Path]
     camera_scale: float
     has_gt: bool
+    target_projection: str = "pinhole"
 
 
 def resolve_prepared_path(split_root: Path, value: str, field_name: str) -> Path:
@@ -120,6 +148,7 @@ class ReconstructedColmapEvalDataset(torch.utils.data.Dataset):
         max_test_frames: int | None = None,
         include_all_frames: bool = False,
         use_target_indices: bool = False,
+        inference_manifest_path: Path | None = None,
         filter_scene_id: str | None = None,
         generator: torch.Generator | None = None,
         verbose: bool = False,
@@ -129,9 +158,92 @@ class ReconstructedColmapEvalDataset(torch.utils.data.Dataset):
         self.neighbor_selection_mode = neighbor_selection_mode
         self.include_all_frames = include_all_frames
         self.use_target_indices = use_target_indices
+        self.inference_manifest_path = inference_manifest_path
 
         self._load_scene_data(split_path, split, filter_scene_id, verbose)
-        self._generate_inference_items(num_views, max_test_frames, verbose)
+        if inference_manifest_path is None:
+            self._generate_inference_items(num_views, max_test_frames, verbose)
+        else:
+            self._load_inference_manifest(inference_manifest_path, num_views, max_test_frames, verbose)
+
+    def _load_inference_manifest(
+        self,
+        path: Path,
+        num_views: int | None,
+        max_test_frames: int | None,
+        verbose: bool,
+    ) -> None:
+        """Load explicit ordered targets for joint multiview inference."""
+        if len(self.scene_ids) != 1:
+            raise ValueError("an inference manifest requires exactly one selected reconstructed_colmap scene")
+        raw = json.loads(path.resolve().read_text())
+        if raw.get("schema_version") != 1 or not isinstance(raw.get("items"), list):
+            raise ValueError(f"unsupported inference manifest schema in {path}")
+        scene_id = self.scene_ids[0]
+        transforms = self.transforms_by_scene_id[scene_id]
+        total_frames = len(transforms["frames"])
+        train_ids = self.train_ids_by_scene_id[scene_id]
+        expected_context = self._resolve_num_views(num_views, train_ids, scene_id)
+        self.inference_items = []
+        for chunk_idx, entry in enumerate(raw["items"]):
+            targets = entry.get("target_indices")
+            neighbors = entry.get("neighbor_indices")
+            outputs = entry.get("output_indices")
+            global_ids = entry.get("global_frame_ids")
+            item_noise_seed = entry.get("item_noise_seed")
+            fields = {
+                "target_indices": targets,
+                "neighbor_indices": neighbors,
+                "output_indices": outputs,
+            }
+            for name, values in fields.items():
+                if not isinstance(values, list) or not all(
+                    isinstance(value, int) and not isinstance(value, bool) for value in values
+                ):
+                    raise ValueError(f"manifest item {chunk_idx} field {name} must be a list of integers")
+            if global_ids is not None and (
+                not isinstance(global_ids, list)
+                or not all(isinstance(value, int) and not isinstance(value, bool) for value in global_ids)
+            ):
+                raise ValueError(
+                    f"manifest item {chunk_idx} field global_frame_ids must be a list of integers when present"
+                )
+            if item_noise_seed is not None and (
+                not isinstance(item_noise_seed, int) or isinstance(item_noise_seed, bool) or item_noise_seed < 0
+            ):
+                raise ValueError(f"manifest item {chunk_idx} item_noise_seed must be a non-negative integer")
+            if not targets or len(set(targets)) != len(targets):
+                raise ValueError(f"manifest item {chunk_idx} has empty or duplicate target indices")
+            if len(outputs) != len(targets) or (global_ids is not None and len(global_ids) != len(targets)):
+                raise ValueError(f"manifest item {chunk_idx} metadata length does not match its targets")
+            if min(targets) < 0 or max(targets) >= total_frames:
+                raise ValueError(f"manifest item {chunk_idx} target index is outside [0, {total_frames - 1}]")
+            if train_ids.intersection(targets):
+                raise ValueError(f"manifest item {chunk_idx} uses selected real anchors as targets")
+            if len(neighbors) != expected_context or not set(neighbors).issubset(train_ids):
+                raise ValueError(
+                    f"manifest item {chunk_idx} must use {expected_context} selected real neighbors"
+                )
+            if max_test_frames is not None and len(targets) > max_test_frames:
+                raise ValueError(
+                    f"manifest item {chunk_idx} has {len(targets)} frames, exceeding {max_test_frames}"
+                )
+            pair = InferencePair(
+                neighbor_indices=neighbors,
+                test_indices=targets,
+                reversed=False,
+                chunk_idx=chunk_idx,
+                scene_id=scene_id,
+                is_test_frame=[output != -1 for output in outputs],
+                output_indices=outputs,
+                global_frame_ids=global_ids,
+                item_noise_seed=item_noise_seed,
+            )
+            self.inference_items.append((scene_id, pair))
+        if not self.inference_items:
+            raise ValueError(f"inference manifest {path} contains no items")
+        if verbose:
+            print(f"Loaded {len(self.inference_items)} explicit joint inference items from {path}")
 
     def _load_scene_data(
         self,
@@ -189,6 +301,10 @@ class ReconstructedColmapEvalDataset(torch.utils.data.Dataset):
         prompt_path = resolve_required_prepared_path(split_root, metadata, "prompt_path")
         has_gt = metadata.get("has_gt", True)
         assert isinstance(has_gt, bool), f"Scene {scene_id!r} has non-boolean has_gt metadata: {has_gt!r}"
+        target_projection = metadata.get("target_projection", "pinhole")
+        assert target_projection in {"pinhole", "equirectangular"}, (
+            f"Scene {scene_id!r} has unsupported target_projection={target_projection!r}"
+        )
         return ReconstructedColmapScene(
             scene_id=scene_id,
             transforms_path=resolve_required_prepared_path(split_root, metadata, "transforms_path"),
@@ -204,6 +320,7 @@ class ReconstructedColmapEvalDataset(torch.utils.data.Dataset):
             prompt_paths=[prompt_path],
             camera_scale=resolve_required_number(metadata, "camera_scale"),
             has_gt=has_gt,
+            target_projection=target_projection,
         )
 
     def _reset_scene_data(self) -> None:
@@ -361,7 +478,13 @@ class ReconstructedColmapEvalDataset(torch.utils.data.Dataset):
         # Load neighbor frames
         neighbor_file_paths = [transforms["frames"][x]["file_path"] for x in neighbor_indices]
         rgb_neighbors = load_frames_from_prepared_paths(scene.image_root, neighbor_file_paths)
-        item["rgb_neighbors"] = resize_to_multiple_of_16(rgb_neighbors)
+        item["rgb_neighbors"] = resize_frames_to_spatial_shape(
+            rgb_neighbors,
+            item["rgb_rendered"].shape[-2:],
+        )
+        assert item["rgb_neighbors"].shape[-2:] == item["rgb_rendered"].shape[-2:], (
+            "ArtiFixer PRoPE requires neighbor and rendered target tensors to share one spatial patch grid"
+        )
 
         # Load opacity
         opacity = load_indexed_frames(scene.opacity_dir, frame_indices, filename_format="{:05d}.png", grayscale=True)
@@ -377,11 +500,21 @@ class ReconstructedColmapEvalDataset(torch.utils.data.Dataset):
             image_shape=(H, W),
             skip_vae_check=True,  # Eval script handles padding
         )
+        if scene.target_projection == "equirectangular":
+            camera_items["camera_rays"] = equirectangular_camera_rays_from_w2cs(
+                camera_items["w2cs"], H, W
+            )
         item.update(camera_items)
 
         # Add metadata
         item["frame_indices"] = torch.tensor(frame_indices, dtype=torch.long)
         item["neighbor_indices"] = torch.tensor(neighbor_indices, dtype=torch.long)
+        if pair.output_indices is not None:
+            item["output_indices"] = torch.tensor(pair.output_indices, dtype=torch.long)
+        if pair.global_frame_ids is not None:
+            item["global_frame_ids"] = torch.tensor(pair.global_frame_ids, dtype=torch.long)
+        if pair.item_noise_seed is not None:
+            item["item_noise_seed"] = int(pair.item_noise_seed)
         item["scene_id"] = scene_id
         item["chunk_idx"] = pair.chunk_idx
         item["valid_frames_mask"] = torch.ones(num_frames, dtype=torch.bool)

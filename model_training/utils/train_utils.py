@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 import argparse
 import os
@@ -336,6 +337,7 @@ def get_pipe(
         transformer.load_state_dict(state_dict)
 
     vae = AutoencoderKLWan.from_pretrained(args.model_id, subfolder="vae", torch_dtype=torch.bfloat16).to(device)
+    vae.enable_tiling()
 
     return ArtifixerPipeline(
         vae=vae,
@@ -353,6 +355,7 @@ def get_pipe(
 
 def get_kv_cache_pipe(args: argparse.Namespace, device: torch.device | str) -> ArtifixerKvCachePipeline:
     vae = AutoencoderKLWan.from_pretrained(args.model_id, subfolder="vae", torch_dtype=torch.bfloat16).to(device)
+    vae.enable_tiling()
 
     return ArtifixerKvCachePipeline(
         vae=vae,

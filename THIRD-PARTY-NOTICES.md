@@ -102,7 +102,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## 3DGRUT
 
 - Path: `thirdparty/3DGRUT-ArtiFixer`
-- Repository: https://github.com/nv-tlabs/3DGRUT-ArtiFixer
+- Modified submodule: https://github.com/guilhem0908/3DGRUT-ArtiFixer-360
+- Original integration: https://github.com/nv-tlabs/3DGRUT-ArtiFixer
 - Upstream project: https://github.com/nv-tlabs/3dgrut
 - ArtiFixer integration commit: 9fce681577334709078098206f6f414f36e1ad61
 - License: Apache-2.0

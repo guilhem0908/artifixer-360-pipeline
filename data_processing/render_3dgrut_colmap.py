@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for the ArtiFixer 360 research pipeline by Guilhem Carmouze, 2026.
 
 """Render a 3DGUT COLMAP checkpoint into the ArtiFixer reconstruction layout."""
 
@@ -27,6 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--selected_indices", type=Path, required=True)
     parser.add_argument("--num_selected_indices", type=int, default=None)
     parser.add_argument("--downsample_factor", type=float, default=None)
+    parser.add_argument(
+        "--min_transmittance",
+        type=float,
+        default=None,
+        help=(
+            "Optional ray early-stop threshold. Use separate output roots for a 0.50/0.20/0.03 "
+            "phantom diagnostic sweep."
+        ),
+    )
     parser.add_argument("--render_dataset_dir", type=Path, default=None)
     parser.add_argument(
         "--trajectory_path",
@@ -99,6 +109,7 @@ def render_3dgrut_colmap(
     selected_indices: Path,
     num_selected_indices: int | None = None,
     downsample_factor: float | None = None,
+    min_transmittance: float | None = None,
     render_dataset_dir: Path | None = None,
     trajectory_path: Path | None = None,
     trajectory_output_subdir: str | None = None,
@@ -120,6 +131,10 @@ def render_3dgrut_colmap(
         )
     if downsample_factor is not None:
         config_overrides["dataset.downsample_factor"] = downsample_factor
+    if min_transmittance is not None:
+        if not 0.0 < min_transmittance < 1.0:
+            raise ValueError("min_transmittance must be in (0, 1)")
+        config_overrides["render.min_transmittance"] = min_transmittance
     if num_selected_indices is not None:
         config_overrides["num_selected_indices"] = num_selected_indices
 
@@ -165,6 +180,7 @@ def main() -> None:
         selected_indices=args.selected_indices,
         num_selected_indices=args.num_selected_indices,
         downsample_factor=args.downsample_factor,
+        min_transmittance=args.min_transmittance,
         render_dataset_dir=args.render_dataset_dir,
         trajectory_path=args.trajectory_path,
     )
