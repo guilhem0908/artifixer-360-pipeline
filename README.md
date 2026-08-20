@@ -37,6 +37,12 @@ perspective-view processing, depth-aware loop constraints and 3D distillation.
 No source videos, private datasets, generated results, checkpoints, credentials
 or cluster-specific paths are included.
 
+The public handover also contains the [reproducible scientific framework](docs/framework/README.md),
+with editable DrawIO and PowerPoint sources, and the [weekly progress archive](docs/weekly_progress/README.md),
+covering twelve dated milestones from May 11 through August 18, 2026. Large
+original decks and videos remain linked from the archive instead of being
+duplicated in Git history; their technical content is preserved as searchable Markdown.
+
 ## Framework overview
 
 ```text
