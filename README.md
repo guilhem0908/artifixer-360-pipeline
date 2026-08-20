@@ -34,8 +34,9 @@ perspective-view processing, depth-aware loop constraints and 3D distillation.
 - Quantitative checks for depth overlap, loop turns, temporal warp, ERP seams,
   edge preservation and geometry-lock integrity.
 
-No source videos, private datasets, generated results, checkpoints, credentials
-or cluster-specific paths are included.
+No source videos, private datasets, full generated sequences, checkpoints,
+credentials or cluster-specific paths are included. Only the lightweight,
+curated documentation images shown below are versioned with the repository.
 
 The public handover also contains the [reproducible scientific framework](docs/framework/README.md),
 with editable DrawIO and PowerPoint sources, and the [weekly progress archive](docs/weekly_progress/README.md),
@@ -45,40 +46,23 @@ duplicated in Git history; their technical content is preserved as searchable Ma
 
 ## Framework overview
 
-```text
-Perspective video
-      │
-      ▼
-COLMAP cameras + initial 3DGRUT scene
-      │
-      ├───────────────┐
-      ▼               ▼
-Spherical snake   World-locked 14-view rig
-(small turns)     (joint depth/loop windows)
-      │               │
-      ▼               ▼
-ArtiFixer2D       Synchronized ArtiFixer2D
-      └───────┬───────┘
-              ▼
-Canonical depth/color-loop targets
-              │
-              ▼
-Geometry-locked ArtiFixer3D distillation
-              │
-              ▼
-Render the 14 perspective directions
-              │
-              ▼
-Direct perspective → ERP projection
-              │
-              ▼
-Optional ArtiFixer3D+ → final ERP video
-```
+![Framework overview: pinhole video to geometry-aware restoration and equirectangular 360-degree video](docs/assets/readme/framework_overview.png)
 
-The model never receives an ERP as an ordinary planar image in the snake
-branch. It receives an ordered sequence of perspective frames. The 3D and
-spherical constraints are supplied by the trajectory, depth reprojection,
-loop graph, distillation targets and ERP renderer.
+The framework keeps one shared 3D Gaussian scene and sends world-locked,
+overlapping pinhole renders through a common ArtiFixer temporal stream. The
+restored pseudo-observations are distilled back into the shared scene before
+synchronized rendering, final ArtiFixer3D+ restoration and ERP projection.
+The editable source and validators are in the [framework archive](docs/framework/README.md).
+
+## Concrete result: 451K vs depth + loop distillation
+
+![First ArtiFixer3D+ run at 451K on the left versus depth and loop distillation on the right](docs/assets/readme/result_451k_vs_depth_loop_distillation.png)
+
+*Left: first ArtiFixer3D+ run at 451K. Right: depth + loop distillation.* The
+depth/loop branch changes the local structure and appearance, but this remains
+a qualitative diagnostic rather than a claim of fully correct geometry; some
+distortions remain visible. Additional dated evidence and negative results are
+preserved in the [weekly progress archive](docs/weekly_progress/README.md).
 
 ## Installation
 
