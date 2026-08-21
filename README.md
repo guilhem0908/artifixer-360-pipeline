@@ -35,13 +35,14 @@ perspective-view processing, depth-aware loop constraints and 3D distillation.
   edge preservation and geometry-lock integrity.
 
 No source videos, private datasets, full generated sequences, checkpoints,
-credentials or cluster-specific paths are included. Only the lightweight,
-curated documentation images shown below are versioned with the repository.
+credentials or cluster-specific paths are included. The final report and one
+short curated comparison video shown below are the only larger publication
+assets versioned with the repository.
 
 The public handover also contains the [reproducible scientific framework](docs/framework/README.md),
 with editable DrawIO and PowerPoint sources, and the [weekly progress archive](docs/weekly_progress/README.md),
 covering twelve dated milestones from May 11 through August 18, 2026. Large
-original decks and videos remain linked from the archive instead of being
+original decks and other videos remain linked from the archive instead of being
 duplicated in Git history; their technical content is preserved as searchable Markdown.
 
 ## Framework overview
@@ -63,6 +64,16 @@ depth/loop branch changes the local structure and appearance, but this remains
 a qualitative diagnostic rather than a claim of fully correct geometry; some
 distortions remain visible. Additional dated evidence and negative results are
 preserved in the [weekly progress archive](docs/weekly_progress/README.md).
+
+## Final report and qualitative comparison
+
+- [Final internship report (PDF)](docs/assets/readme/Rapport_de_stage_2026_CARMOUZE_Guilhem.pdf)
+- [Raw 3DGRUT ERP vs. ArtiFixer3D+ at 451k (MP4, 10 s)](docs/assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4)
+
+Click the preview to open the full comparison video. The raw 3DGRUT ERP is on
+the left and the ArtiFixer3D+ result is on the right.
+
+[![Raw 3DGRUT ERP versus ArtiFixer3D+ qualitative comparison](docs/assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k-preview.jpg)](docs/assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4)
 
 ## Installation
 
