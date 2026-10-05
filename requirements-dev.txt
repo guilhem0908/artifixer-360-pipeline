@@ -1,0 +1,12 @@
+# CPU-only dependencies of the tooling that runs without a GPU, the model
+# checkpoint or the 3DGRUT submodule: trajectory and manifest generators,
+# frustum-to-ERP stitching, quality metrics and their tests.
+#
+# Install a CPU build of PyTorch first if you do not want the default wheel:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# The full pipeline environment is defined by Dockerfile.cuda12.
+numpy>=1.26
+opencv-python-headless>=4.9
+pillow>=10.1
+pytest>=8.2
+torch>=2.2
