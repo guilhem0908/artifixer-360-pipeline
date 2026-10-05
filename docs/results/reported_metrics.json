@@ -1,0 +1,68 @@
+{
+  "description": "Measurements quoted in the README, transcribed from the dated experiment records under docs/. They were produced on a 4-GPU cluster node during the 2026 internship; the raw QC reports stayed on that cluster and are not part of this repository, so these values cannot be recomputed from the repository alone. tests/test_reported_results.py checks that every value below appears verbatim both in its source record and in the README.",
+  "metrics": [
+    {
+      "id": "depth_overlap_before_distillation",
+      "result": "positive, limited scope",
+      "meaning": "Cross-view depth-overlap MAE of the repaired perspective views (pseudo-views), measured before distillation, without and with depth-aware peer synchronisation. Includes the H300 <-> H000 horizontal closure pair. Lower is better.",
+      "values": {"without_depth_sync": "0.03396", "with_depth_sync": "0.02471", "relative_change_recorded": "27.25%"},
+      "source": "docs/artifixer_abci_handover_2026-08-20.md"
+    },
+    {
+      "id": "depth_gain_after_distillation",
+      "result": "negative",
+      "meaning": "Final distilled ERP video, first ArtiFixer3D+ run at 451k versus the depth + loop variant: temporal warp MAE and seam MAE. Lower is better; the depth + loop variant is not better on either, so the pseudo-view gain did not clearly survive distillation.",
+      "values": {"baseline_451k_temporal_warp_mae": "0.02329", "baseline_451k_seam_mae": "0.01143", "depth_loop_temporal_warp_mae": "0.02582", "depth_loop_seam_mae": "0.01174"},
+      "source": "docs/artifixer_abci_handover_2026-08-20.md"
+    },
+    {
+      "id": "reference_run_117_frames",
+      "result": "positive",
+      "meaning": "117-frame reference run with a smoothed forward-facing 14-view rig (1,638 renders at 768 x 768), two 77-frame windows, 8 denoising steps. Optical-flow temporal warp MAE and edge flicker, median over the clip, raw 3DGRUT input renders versus pipeline output. Lower is better. The edge-strength ratio (output / high-confidence input, 1 = fully retained) shows that part of the stability comes with softer detail.",
+      "values": {"temporal_warp_mae_raw": "0.03732", "temporal_warp_mae_output": "0.02016", "edge_flicker_raw": "0.03422", "edge_flicker_output": "0.01627", "edge_strength_ratio_median": "0.4859", "edge_strength_ratio_per_view_minimum": "0.3653", "target_renders": "1,638", "walltime_one_4gpu_node": "00:20:21", "verdict": "PASS_FORWARD14_DEPTHPEER77_PILOT"},
+      "source": "docs/artifixer_abci_handover_2026-08-20.md"
+    },
+    {
+      "id": "reference_run_colmap",
+      "result": "context",
+      "meaning": "COLMAP 4.1.1 pose reconstruction of the 117-frame reference clip (ALIKED + LightGlue, one shared SIMPLE_RADIAL camera).",
+      "values": {"registered_images": "117/117", "points": "24,933", "median_reprojection_error_px": "0.952"},
+      "source": "docs/artifixer_abci_handover_2026-08-20.md"
+    },
+    {
+      "id": "venhancer_two_yaw_postprocess",
+      "result": "positive, perceptual only",
+      "meaning": "Optional two-yaw VEnhancer post-process applied to the 117-frame output: temporal warp MAE and edge flicker before -> after. It smooths and can reinterpret weak texture, so it is a perceptual enhancement and not a geometric validation.",
+      "values": {"temporal_warp_mae_before": "0.02020", "temporal_warp_mae_after": "0.01339", "temporal_warp_relative_change": "-33.7%", "edge_flicker_before": "0.01627", "edge_flicker_after": "0.01009", "edge_flicker_relative_change": "-38.0%"},
+      "source": "docs/artifixer_abci_handover_2026-08-20.md"
+    },
+    {
+      "id": "per_face_cubemap_repair",
+      "result": "negative",
+      "meaning": "Mean seam-failure fraction over the 12 cubemap face adjacencies (an adjacency fails above 0.1), raw 120k cubemap versus the same faces repaired independently by ArtiFixer, and the geometry-locked 3D variant. Lower is better. The locked variant is seam-consistent only because geometry cannot move; its geometric artifacts remain.",
+      "values": {"raw_cubemap_mean": "0.3420", "raw_cubemap_failed_adjacencies": "11/12", "per_face_artifixer_mean": "0.8328", "per_face_artifixer_failed_adjacencies": "12/12", "geometry_locked_mean": "0.0000", "geometry_locked_failed_adjacencies": "0/12"},
+      "source": "docs/gauvain_artifixer_no_go_2026-07-22.md"
+    },
+    {
+      "id": "full_run_154_frames",
+      "result": "negative",
+      "meaning": "Full 154-frame, 14-direction run (2,156 perspective views, 1024 x 512 ERP). Spherical coverage and exact source-pixel reinsertion passed; the final acceptance gates on seam and temporal stability failed.",
+      "values": {"perspective_views": "2,156", "coverage_verdict": "PASS_FULL_SPHERICAL_COVERAGE", "final_verdict": "QC_FAIL_VISUAL_AND_TEMPORAL", "circular_seam_vs_local_contrast": "7.65", "max_temporal_warp_mae": "0.1298", "max_temporal_warp_mae_threshold": "0.10", "max_temporal_p95": "0.4196", "max_temporal_p95_threshold": "0.30", "max_black_fraction": "3.77%"},
+      "source": "docs/weekly_progress/2026-08-09.md"
+    },
+    {
+      "id": "source_camera_sphere_coverage",
+      "result": "diagnostic",
+      "meaning": "Share of the full sphere seen by the source pinhole camera at one pose (rectangular solid angle of a 1972 x 1087 image with a 924.0169 px focal length). This figure is recomputed from the intrinsics by the test suite.",
+      "values": {"sphere_fraction": "12.06%", "field_of_view_degrees": "93.72° × 60.93°", "focal_length_px": "924.0169"},
+      "source": "docs/gauvain_artifixer_no_go_2026-07-22.md"
+    },
+    {
+      "id": "splatfacto_baseline",
+      "result": "context",
+      "meaning": "Earlier internship baseline, not produced by this pipeline: plain video -> COLMAP -> Nerfstudio Splatfacto on a 70/30 split, PSNR (dB) and SSIM after 30k and 60k iterations.",
+      "values": {"psnr_30k": "26.08", "ssim_30k": "0.91", "psnr_60k": "28.69", "ssim_60k": "0.94"},
+      "source": "docs/weekly_progress/2026-05-18.md"
+    }
+  ]
+}
