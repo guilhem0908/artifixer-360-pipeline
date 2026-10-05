@@ -1,0 +1,21 @@
+{
+  "description": "Pinhole video to 360-degree equirectangular video: 14-view world-locked rig, depth-aware multi-view diffusion consensus and geometry-locked 3DGS distillation on top of NVIDIA ArtiFixer (AIST research internship, 2026).",
+  "homepage": "",
+  "topics": [
+    "gaussian-splatting",
+    "3dgs",
+    "3dgrut",
+    "novel-view-synthesis",
+    "video-diffusion",
+    "360-video",
+    "equirectangular",
+    "panorama-stitching",
+    "multi-view-consistency",
+    "computer-vision",
+    "robot-navigation",
+    "colmap",
+    "pytorch",
+    "hpc",
+    "research-code"
+  ]
+}
