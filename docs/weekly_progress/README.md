@@ -1,8 +1,8 @@
 # Weekly progress archive
 
-This directory preserves the technical progression of the Gauvain/ArtiFixer-360 internship work as searchable Markdown. It covers every dated weekly/progress artifact found in the project Drive and on the workstation that belonged to this workstream.
+This directory preserves the technical progression of the Gauvain/ArtiFixer-360 internship work as searchable Markdown. It covers every dated weekly/progress document that belonged to this workstream.
 
-The original presentations are large—approximately 15–75 MB each—and together exceed 350 MB. To keep this public Git repository practical to clone, the archive stores their technical text, tables, conclusions and provenance here while linking to the originals on Google Drive. Visual figures and videos remain in those source files and may require Drive permission.
+The original presentations are large—approximately 15–75 MB each—and together exceed 350 MB. To keep this Git repository practical to clone, the archive stores their technical text, tables and conclusions here. The original slide decks, with their figures and videos, are internal documents and are not included.
 
 ## Timeline
 
@@ -38,13 +38,13 @@ Included:
 
 - the complete dated presentation series for this project;
 - later progress reviews that superseded the weekly slide naming convention;
-- technical tables, failure evidence, conclusions and original Drive links.
+- technical tables, failure evidence and conclusions.
 
 Excluded:
 
 - duplicate exports of the same deck;
 - administrative and signed documents;
 - reports belonging to other interns;
-- raw videos or slide binaries whose size would make the public Git history impractical.
+- raw videos or slide binaries whose size would make the Git history impractical.
 
 The editable final framework itself is versioned separately in the [framework archive](../framework/README.md).

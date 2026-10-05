@@ -2,6 +2,9 @@
 
 Date: 2026-07-22 (Asia/Tokyo)
 
+Edited after the internship: scheduler job identifiers and per-job log names
+were removed. Measurements and conclusions are unchanged.
+
 Status: **CLOSED — NO-GO with the current observations, weights, and pipeline family**
 
 ## Decision
@@ -22,10 +25,9 @@ No tested result satisfies all three. This is not a claim that panoramic video
 restoration is impossible in general. It is a NO-GO under the available Gauvain
 observations and the current pretrained-model approach.
 
-At closure time, the local machine had no matching compute process, and `qstat` for
-the ABCI account returned no active or queued job. A local VLC viewer displaying an
-existing result was left untouched. No job had to be cancelled. Existing logs,
-checkpoints, scripts, images, and videos are intentionally preserved.
+At closure time no job of this campaign was running or queued, so nothing had to be
+cancelled. Existing logs, checkpoints, scripts, images, and videos were intentionally
+preserved.
 
 ## Decisive evidence
 
@@ -48,7 +50,7 @@ cubemap adjacencies.
 | ERP 480k raw | 0.5379 | 0.9481 | 12/12 | Existing geometric contradiction |
 | ERP labelled “seamless” | 0.5379 | 0.9481 | 12/12 | Identical QC: post-blending did not repair geometry |
 
-The source files for these measurements remain on ABCI under:
+The source files for these measurements were stored on the cluster under:
 
 - `/path/to/artifixer/outputs/gauvain_base30k_cubemap25_fov110_rules_retry1/`
 - `/path/to/artifixer/outputs/gauvain_cubemap_1216_fov100_120k/`
@@ -90,12 +92,12 @@ Metric files:
 PBS state `F` below means finished. Every listed job has `Exit_status = 0`; none is a
 failed computation being mistaken for a negative result.
 
-| Job | Name | Walltime | Output log | Technical outcome |
-|---|---|---:|---|---|
-| `164437.qjcm` | `gauvain-closedloop14` | 00:18:07 | `/path/to/artifixer/src/ArtiFixer/gauvain-closedloop14.o164437` | Latent/closed-loop pilot completed; visual inconsistency remained |
-| `164637.qjcm` | `gauvain-noisesync14` | 00:17:46 | `/path/to/artifixer/src/ArtiFixer/gauvain-noisesync14.o164637` | Noise synchronization completed; smoothing/zones remained |
-| `164684.qjcm` | `g15-final-ply` | 00:02:08 | `/path/to/artifixer/logs/gauvain_seq15_clean_20260719/final_export_ply.log` | The 15-stage chain reached the final 480k PLY; geometric artifacts remained |
-| `172792.qjcm` | `qwen-edit360-full` | 00:36:43 | `/path/to/artifixer/src/ArtiFixer/qwen-edit360-full.o172792` | 154/154 edited frames; temporal hallucination remained |
+| Job name | Walltime | Technical outcome |
+|---|---:|---|
+| `gauvain-closedloop14` | 00:18:07 | Latent/closed-loop pilot completed; visual inconsistency remained |
+| `gauvain-noisesync14` | 00:17:46 | Noise synchronization completed; smoothing/zones remained |
+| `g15-final-ply` | 00:02:08 | The 15-stage chain reached the final 480k PLY; geometric artifacts remained |
+| `qwen-edit360-full` | 00:36:43 | 154/154 edited frames; temporal hallucination remained |
 
 This distinction is important: the campaign's `success.env` files and many previous
 status reports checked exit codes, frame counts, or tensor locking. Those are useful

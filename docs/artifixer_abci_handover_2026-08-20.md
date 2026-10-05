@@ -1,7 +1,11 @@
 # ArtiFixer handover: ABCI workflow and off-trajectory experiments
 
 Date: 2026-08-20 (Asia/Tokyo)
-Audience: Raphael, Oka-san, and future ArtiFixer maintainers
+Audience: future ArtiFixer maintainers
+
+Edited after the internship: scheduler job identifiers, account-specific
+details and links to documents that are not part of this repository were
+removed. Measurements, parameters and technical conclusions are unchanged.
 
 ## Executive status
 
@@ -9,15 +13,15 @@ The recommended reference result is the 117-frame `ytb_900` run using a
 smoothed forward-facing 14-view rig, two overlapping 77-frame temporal
 windows, synchronized peer conditioning, depth-aware reprojection, ERP
 stitching, and fail-closed depth/detail/temporal quality gates. The final job
-was `189387.qjcm`; it finished with `Exit_status=0`, walltime `00:20:21`, and
-verdict `PASS_FORWARD14_DEPTHPEER77_PILOT`.
+finished with `Exit_status=0`, walltime `00:20:21`, and verdict
+`PASS_FORWARD14_DEPTHPEER77_PILOT`.
 
-The source code and the local result videos are preserved. The ABCI runtime is
-**not currently ready to reproduce that run**. A cleanup on 2026-08-19 removed
-the repository, COLMAP runtime, Hugging Face cache, run directories, and the
-original ArtiFixer container. A generic NGC image for another project was then
-placed at the old ArtiFixer container path. Its SHA-256 is different and it has
-not been validated for ArtiFixer.
+The source code is in this repository. The cluster-side runtime (repository
+checkout, COLMAP runtime, Hugging Face cache, run directories, and the
+validated ArtiFixer container) is **not** part of it and has to be restored and
+verified before that run can be reproduced. A container file present at the
+expected path is not sufficient evidence: only an image whose SHA-256 matches
+the pin below has been validated for ArtiFixer.
 
 Do not submit an ArtiFixer job until
 `scripts/check_artifixer_abci_handover.py` returns `PASS` and a GPU smoke test
@@ -83,16 +87,16 @@ The complete raw archive is still local:
 SHA256 5fa37973a4b744d8530718d4d5ef10bf91e912825b5d24dbcc82ed47757444b0
 ```
 
-Historical ABCI records, now removed by the cleanup:
+Records of the reference run on the cluster:
 
 - run root:
   `/path/to/artifixer/data/room_tour_pipeline_v2/runs/ytb900_pilot117_v1`;
-- pose job `189007.qjcm`: 117/117 registered images, 24,933 points,
-  median reprojection error approximately 0.952 px;
-- final job `189387.qjcm`: `PASS_FORWARD14_DEPTHPEER77_PILOT`;
-- historical published directory:
-  `jobs/forward14_depthpeer77/189387.qjcm/published`;
-- historical persistent inference cache: 1,638 validated predictions.
+- pose job: 117/117 registered images, 24,933 points, median reprojection
+  error approximately 0.952 px;
+- final job: `PASS_FORWARD14_DEPTHPEER77_PILOT`;
+- published directory:
+  `jobs/forward14_depthpeer77/<job-id>/published`;
+- persistent inference cache: 1,638 validated predictions.
 
 Preserved local result directory:
 
@@ -124,12 +128,11 @@ geometry in unobserved regions.
 
 ### Gauvain comparison assets
 
-- raw 3DGRUT ERP vs ArtiFixer3D+ 451k:
-  <https://drive.google.com/file/d/1Lpva8kRQ4O4lVtV2GwzPpgV4b4B-DzUF/view?usp=drivesdk>;
-- position-first vs direction-first ArtiFixer2D:
-  <https://drive.google.com/file/d/1l80NMnOy1NTCkRCsMYD7D1IP5fnmSlmM/view?usp=drivesdk>;
-- supervisor deck:
-  <https://docs.google.com/presentation/d/1ZyuGAkQU--Mgiz9EyFKQZAIocbSFKFQhGaECbtd9P-w/edit>.
+- raw 3DGRUT ERP vs ArtiFixer3D+ 451k: versioned in this repository as
+  [`assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4`](assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4);
+- position-first vs direction-first ArtiFixer2D comparison video and the final
+  review deck: not included in this repository; the deck's text is archived in
+  [`weekly_progress/2026-08-18.md`](weekly_progress/2026-08-18.md).
 
 The Gauvain campaign is a scientific `NO-GO` for a faithful, clean,
 spatially continuous, temporally stable 360-degree video under the available
@@ -137,9 +140,9 @@ observations and model weights. A job finishing successfully is not the same
 as a visual/scientific pass. See
 `docs/gauvain_artifixer_no_go_2026-07-22.md`.
 
-## Canonical public source snapshot
+## Canonical source snapshot
 
-The complete public handover is split across these two repositories:
+The complete handover is split across these two repositories:
 
 ```text
 ArtiFixer 360 base release: 7e271037bd00a9091f8f2572ad3e06b69f40a205
@@ -151,7 +154,7 @@ main repository: https://github.com/guilhem0908/artifixer-360-pipeline
 Clone the main repository with `--recurse-submodules`; its submodule is pinned
 to the canonical 3DGRUT fork commit above. The historical overlay inventory is
 kept in `docs/artifixer_handover_overlay_files.txt` for audit purposes, but a
-fresh public clone does not require extracting that overlay.
+fresh recursive clone does not require extracting that overlay.
 
 The prepared local transfer artifacts are:
 
@@ -168,7 +171,7 @@ audit are installed at:
 /path/to/artifixer/handover/2026-08-20/
 ```
 
-All `/path/to/...` values in this public document are placeholders. Set
+All `/path/to/...` values in this document are placeholders. Set
 `AFROOT` to the receiving researcher's ABCI root and `LOCAL_DATA_ROOT` to the
 local input/output directory before using the commands.
 
@@ -197,20 +200,9 @@ Pinned assets:
 | MoGe checkpoint | `Ruicheng/moge-2-vitl-normal`, `model.pt` | `280741fd09bc3f403ccff9967784c2a391b52d2c0742ae3efdb21d9f90cc1a01` |
 | Wan caption model | `Wan-AI/Wan2.1-T2V-14B-Diffusers` | revision `38ec498cb3208fb688890f8cc7e94ede2cbd7f68` |
 
-Current ABCI audit on 2026-08-20:
-
-| Component | Current state |
-|---|---|
-| `src/ArtiFixer` | missing |
-| original ArtiFixer SIF | missing |
-| substitute at the same path | present, SHA-256 `733ceadfccd75d15abc008a05911eba129d19c0f403b6d8df68ccc84cdc28a6d`; reject |
-| COLMAP SIF and Python venv | missing |
-| Hugging Face cache | missing |
-| historical run/publication directories | missing |
-
-The substitute is `nvcr.io/nvidia/pytorch:24.07-py3` plus patches for a
-different VOD/SAM3 project. Matching the old filename does not make it an
-ArtiFixer runtime.
+None of these assets is shipped with the repository. A file with the expected
+name but a different hash is rejected: matching the filename does not make an
+image an ArtiFixer runtime.
 
 Run the read-only audit after restoring files:
 
@@ -233,8 +225,8 @@ production, submit a small GPU smoke test that imports Torch, ArtiFixer,
 
 ### Recovery options
 
-Preferred: recover the two original SIF files and the COLMAP venv/wheels from a
-colleague or archive, then verify the hashes above.
+Preferred: recover the two original SIF files and the COLMAP venv/wheels from
+an archive, then verify the hashes above.
 
 Fallback: build a new runtime from the current `Dockerfile.cuda12`, export the
 OCI image with `docker save`, transfer it to ABCI, and convert it with
@@ -330,10 +322,9 @@ candidate is published only after the checks pass:
 $RUN_DIR/jobs/pose_standard/$POSE_JOB/published/candidate.json
 ```
 
-Immediately after a real submission, provide the user with an exact local
-`ssh abciq` monitoring command containing the returned job ID and the exact
-per-job `job.log`/`status.env` paths, refreshing every 10 seconds. `Ctrl+C`
-must stop monitoring. Follow `AGENTS.md`; do not reuse an example job ID.
+After a real submission, monitor the job with the job ID returned by `qsub`
+and the per-job `job.log`/`status.env` paths (a 10-second refresh is enough).
+Do not reuse an example job ID.
 
 ### 4. Chain the synchronized forward14/depthpeer77 job
 
@@ -485,7 +476,7 @@ observation. No ordering trick can replace the missing evidence.
 | scratch disappears after a QC failure | expensive 1,638 predictions are lost | publish a hash-validated immutable inference retry cache atomically before QC |
 | seam hidden by feather/multiband | boundary looks softer but becomes a ghost/double surface | always evaluate hard geometric consistency; blending is presentation, not repair |
 | job `Exit_status=0` mistaken for scientific success | technically complete but visually invalid outputs | require explicit QC verdicts and whole-clip visual review |
-| ABCI container replaced at same filename | scripts find a SIF but run in the wrong environment | hash every runtime; filename-only checks are insufficient |
+| container at the expected path is not the validated image | scripts find a SIF but run in the wrong environment | hash every runtime; filename-only checks are insufficient |
 
 ## Optional VEnhancer post-processing
 
@@ -547,7 +538,7 @@ persistent 3D representation that is updated only from verified evidence.
 
 | Purpose | Main files |
 |---|---|
-| public setup and standard inference | `README.md`, `Dockerfile.cuda12` |
+| setup and standard inference | `README.md`, `Dockerfile.cuda12` |
 | source-run materialization | `scripts/prepare_roomtour_v2_run.py` |
 | all-frame pose reconstruction | `scripts/run_roomtour_standard_colmap.py`, `scripts/abci_roomtour_standard_colmap.pbs` |
 | reference 117-frame job | `scripts/abci_roomtour_forward14_depthpeer77_pilot_4gpu.pbs` |
@@ -579,7 +570,8 @@ python -m pytest -q \
    videos;
 2. walk through the pose candidate, forward14 manifest, two windows, and
    synchronization metadata;
-3. run the handover preflight and explain the current ABCI recovery blocker;
+3. run the handover preflight and explain what a `PASS` does and does not
+   verify;
 4. prepare a two- or 17-frame smoke run after the runtime is restored;
 5. show how to monitor an actual PBS job with its exact job ID and per-job log;
 6. inspect all QC JSON and distinguish technical completion from a scientific
@@ -587,7 +579,7 @@ python -m pytest -q \
 7. explain why new frame counts and new trajectory topology require explicit
    contract/test updates.
 
-The minimum acceptance criterion for the transfer is that Raphael or Oka-san
-can independently prepare a run, explain which inputs are real vs generated,
+The minimum acceptance criterion for the transfer is that the receiving
+researcher can independently prepare a run, explain which inputs are real vs generated,
 submit and monitor a smoke job, locate the publication, and interpret every QC
 verdict without relying on undocumented paths.
