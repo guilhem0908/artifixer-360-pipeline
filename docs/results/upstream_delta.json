@@ -1,0 +1,643 @@
+{
+  "upstream_repository": "https://github.com/nv-tlabs/ArtiFixer",
+  "base_commit": "c3207529847bd951b6e0c71a501887076191bdbd",
+  "head_commit": "950fd746b2f1490ae09d9e64a6b988c7f318b88f",
+  "head_commit_date": "2026-08-21",
+  "commits_after_base": 5,
+  "totals": {
+    "files_changed": 145,
+    "files_added": 121,
+    "files_modified": 24,
+    "files_deleted": 0,
+    "binary_files": 12,
+    "lines_added": 23602,
+    "lines_deleted": 630
+  },
+  "new_test_modules": 32,
+  "test_functions_in_new_modules": 119,
+  "areas": {
+    "pipeline_scripts": {
+      "label": "Pipeline scripts: trajectories, manifests, targets, stitching, QC",
+      "files_added": 36,
+      "files_modified": 0,
+      "files_deleted": 0,
+      "binary_files": 0,
+      "lines_added": 10050,
+      "lines_deleted": 0
+    },
+    "cluster_jobs": {
+      "label": "PBS / Singularity job scripts",
+      "files_added": 6,
+      "files_modified": 0,
+      "files_deleted": 0,
+      "binary_files": 0,
+      "lines_added": 1906,
+      "lines_deleted": 0
+    },
+    "model_and_data_code": {
+      "label": "Inference, model and distillation code",
+      "files_added": 3,
+      "files_modified": 16,
+      "files_deleted": 0,
+      "binary_files": 0,
+      "lines_added": 4026,
+      "lines_deleted": 144
+    },
+    "tests": {
+      "label": "Tests",
+      "files_added": 32,
+      "files_modified": 3,
+      "files_deleted": 0,
+      "binary_files": 0,
+      "lines_added": 3249,
+      "lines_deleted": 8
+    },
+    "documentation": {
+      "label": "Documentation and progress archive",
+      "files_added": 26,
+      "files_modified": 0,
+      "files_deleted": 0,
+      "binary_files": 5,
+      "lines_added": 2148,
+      "lines_deleted": 0
+    },
+    "diagram_tooling": {
+      "label": "Framework diagram generator and validators",
+      "files_added": 15,
+      "files_modified": 0,
+      "files_deleted": 0,
+      "binary_files": 7,
+      "lines_added": 1994,
+      "lines_deleted": 0
+    },
+    "top_level": {
+      "label": "Top-level notices, README and configuration",
+      "files_added": 3,
+      "files_modified": 5,
+      "files_deleted": 0,
+      "binary_files": 0,
+      "lines_added": 229,
+      "lines_deleted": 478
+    }
+  },
+  "modified_upstream_files": [
+    {
+      "path": "model_training/net/transformer.py",
+      "lines_added": 563,
+      "lines_deleted": 96
+    },
+    {
+      "path": "data_processing/artifixer3d.py",
+      "lines_added": 440,
+      "lines_deleted": 9
+    },
+    {
+      "path": "data_processing/sparse_recon/metric_alignment.py",
+      "lines_added": 215,
+      "lines_deleted": 7
+    },
+    {
+      "path": "tests/test_reconstructed_colmap_eval.py",
+      "lines_added": 205,
+      "lines_deleted": 8
+    },
+    {
+      "path": "data_processing/run_artifixer3d.py",
+      "lines_added": 188,
+      "lines_deleted": 0
+    },
+    {
+      "path": "README.md",
+      "lines_added": 163,
+      "lines_deleted": 475
+    },
+    {
+      "path": "model_eval/datasets/reconstructed_colmap_eval.py",
+      "lines_added": 135,
+      "lines_deleted": 2
+    },
+    {
+      "path": "data_processing/prepare_colmap_artifixer_inputs.py",
+      "lines_added": 119,
+      "lines_deleted": 15
+    },
+    {
+      "path": "tests/test_artifixer3d_distillation.py",
+      "lines_added": 113,
+      "lines_deleted": 0
+    },
+    {
+      "path": "model_training/net/prope.py",
+      "lines_added": 112,
+      "lines_deleted": 0
+    },
+    {
+      "path": "model_eval/run_inference.py",
+      "lines_added": 82,
+      "lines_deleted": 5
+    },
+    {
+      "path": "tests/test_prepare_colmap_artifixer_inputs.py",
+      "lines_added": 65,
+      "lines_deleted": 0
+    },
+    {
+      "path": "model_training/data/utils.py",
+      "lines_added": 53,
+      "lines_deleted": 0
+    },
+    {
+      "path": "model_training/pipeline/pipeline_base.py",
+      "lines_added": 47,
+      "lines_deleted": 5
+    },
+    {
+      "path": "data_processing/render_3dgrut_colmap.py",
+      "lines_added": 16,
+      "lines_deleted": 0
+    },
+    {
+      "path": "model_training/pipeline/kv_cache_pipeline.py",
+      "lines_added": 14,
+      "lines_deleted": 3
+    },
+    {
+      "path": "model_training/pipeline/pipeline.py",
+      "lines_added": 11,
+      "lines_deleted": 1
+    },
+    {
+      "path": "model_eval/lpipsPytorch/modules/utils.py",
+      "lines_added": 4,
+      "lines_deleted": 1
+    },
+    {
+      "path": ".gitignore",
+      "lines_added": 3,
+      "lines_deleted": 0
+    },
+    {
+      "path": "model_training/utils/train_utils.py",
+      "lines_added": 3,
+      "lines_deleted": 0
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES.md",
+      "lines_added": 2,
+      "lines_deleted": 1
+    },
+    {
+      "path": "model_eval/reconstructed_colmap_evalsets.py",
+      "lines_added": 2,
+      "lines_deleted": 0
+    },
+    {
+      "path": ".gitmodules",
+      "lines_added": 1,
+      "lines_deleted": 1
+    },
+    {
+      "path": "thirdparty/3DGRUT-ArtiFixer",
+      "lines_added": 1,
+      "lines_deleted": 1
+    }
+  ],
+  "added_text_files": [
+    {
+      "path": "model_eval/run_synchronized_multiview_inference.py",
+      "lines": 1176
+    },
+    {
+      "path": "scripts/stitch_artifixer_cubemap360.py",
+      "lines": 904
+    },
+    {
+      "path": "presentations/gauvain_seams/framework_diagram_tool/build_framework_drawio.py",
+      "lines": 762
+    },
+    {
+      "path": "scripts/stitch_artifixer_frustums360.py",
+      "lines": 676
+    },
+    {
+      "path": "scripts/abci_roomtour_standard_full_pipeline_4gpu.pbs",
+      "lines": 674
+    },
+    {
+      "path": "scripts/abci_roomtour_forward14_depthpeer77_pilot_4gpu.pbs",
+      "lines": 650
+    },
+    {
+      "path": "scripts/run_erp_benchmark_colmap.py",
+      "lines": 633
+    },
+    {
+      "path": "docs/artifixer_abci_handover_2026-08-20.md",
+      "lines": 593
+    },
+    {
+      "path": "model_eval/synchronized_multiview.py",
+      "lines": 573
+    },
+    {
+      "path": "scripts/generate_fixed_caption_embedding.py",
+      "lines": 571
+    },
+    {
+      "path": "scripts/run_roomtour_standard_colmap.py",
+      "lines": 567
+    },
+    {
+      "path": "presentations/gauvain_seams/framework_diagram_tool/validate_drawio_framework.py",
+      "lines": 499
+    },
+    {
+      "path": "scripts/build_venhancer_erp_yaw_ensemble.py",
+      "lines": 499
+    },
+    {
+      "path": "scripts/generate_forward_facing14_trajectories.py",
+      "lines": 369
+    },
+    {
+      "path": "scripts/build_depth_canonical_targets.py",
+      "lines": 337
+    },
+    {
+      "path": "scripts/generate_spherical_snake_trajectory.py",
+      "lines": 331
+    },
+    {
+      "path": "presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.drawio",
+      "lines": 328
+    },
+    {
+      "path": "scripts/enforce_temporal_loop_consistency.py",
+      "lines": 326
+    },
+    {
+      "path": "scripts/prepare_depth_synchronized_multiview_windows.py",
+      "lines": 312
+    },
+    {
+      "path": "scripts/generate_cubemap_trajectories.py",
+      "lines": 292
+    },
+    {
+      "path": "scripts/prepare_real_depth_loop_conditions.py",
+      "lines": 290
+    },
+    {
+      "path": "model_eval/run_synchronized_pair_inference.py",
+      "lines": 273
+    },
+    {
+      "path": "tests/test_generate_fixed_caption_embedding.py",
+      "lines": 260
+    },
+    {
+      "path": "scripts/evaluate_depth_synchronized_multiview.py",
+      "lines": 253
+    },
+    {
+      "path": "scripts/prepare_real_anchor_conditions.py",
+      "lines": 253
+    },
+    {
+      "path": "scripts/prepare_roomtour_v2_run.py",
+      "lines": 250
+    },
+    {
+      "path": "scripts/depth_loop_fuse_cubefaces.py",
+      "lines": 243
+    },
+    {
+      "path": "scripts/evaluate_spherical_snake_turn.py",
+      "lines": 232
+    },
+    {
+      "path": "scripts/check_artifixer_abci_handover.py",
+      "lines": 231
+    },
+    {
+      "path": "docs/SNAKE_PIPELINE.md",
+      "lines": 230
+    },
+    {
+      "path": "scripts/generate_spherical_snake_inference_manifest.py",
+      "lines": 213
+    },
+    {
+      "path": "docs/gauvain_artifixer_no_go_2026-07-22.md",
+      "lines": 205
+    },
+    {
+      "path": "tests/test_synchronized_multiview.py",
+      "lines": 199
+    },
+    {
+      "path": "scripts/generate_nerfstudio14_trajectories.py",
+      "lines": 197
+    },
+    {
+      "path": "tests/test_run_synchronized_multiview_inference.py",
+      "lines": 193
+    },
+    {
+      "path": "scripts/evaluate_high_confidence_detail.py",
+      "lines": 189
+    },
+    {
+      "path": "scripts/generate_position_first_artifixer_manifest.py",
+      "lines": 187
+    },
+    {
+      "path": "scripts/abci_roomtour_standard_colmap.pbs",
+      "lines": 186
+    },
+    {
+      "path": "tests/test_run_roomtour_standard_colmap.py",
+      "lines": 183
+    },
+    {
+      "path": "scripts/stitch_artifixer_frustums360_flow.py",
+      "lines": 178
+    },
+    {
+      "path": "scripts/generate_joint_artifixer_manifest.py",
+      "lines": 175
+    },
+    {
+      "path": "scripts/generate_world_locked14_trajectories.py",
+      "lines": 170
+    },
+    {
+      "path": "tests/test_prepare_depth_synchronized_multiview_windows.py",
+      "lines": 163
+    },
+    {
+      "path": "scripts/evaluate_temporal_panorama.py",
+      "lines": 161
+    },
+    {
+      "path": "tests/test_generate_spherical_snake_trajectory.py",
+      "lines": 158
+    },
+    {
+      "path": "presentations/gauvain_seams/validate_framework_pipeline.py",
+      "lines": 154
+    },
+    {
+      "path": "scripts/panorama_metrics.py",
+      "lines": 149
+    },
+    {
+      "path": "tests/test_stitch_artifixer_frustums360.py",
+      "lines": 142
+    },
+    {
+      "path": "scripts/abci_gauvain_positionfirst77_artifixer2d_v2.pbs",
+      "lines": 139
+    },
+    {
+      "path": "scripts/reorient_erp_to_source_camera.py",
+      "lines": 137
+    },
+    {
+      "path": "tests/test_generate_cubemap_trajectories.py",
+      "lines": 137
+    },
+    {
+      "path": "scripts/abci_prepare_gauvain_spherical_snake14_full.pbs",
+      "lines": 136
+    },
+    {
+      "path": "docs/weekly_progress/2026-08-09.md",
+      "lines": 134
+    },
+    {
+      "path": "scripts/audit_artifixer3d_checkpoint_lock.py",
+      "lines": 132
+    },
+    {
+      "path": "tests/test_abci_roomtour_standard_full_pipeline.py",
+      "lines": 130
+    },
+    {
+      "path": "scripts/extract_posefirst_views_from_snake_video.py",
+      "lines": 124
+    },
+    {
+      "path": "scripts/abci_inference_gauvain_spherical_snake14_full_4gpu.pbs",
+      "lines": 121
+    },
+    {
+      "path": "tests/test_check_artifixer_abci_handover.py",
+      "lines": 118
+    },
+    {
+      "path": "docs/HANDOVER.md",
+      "lines": 114
+    },
+    {
+      "path": "docs/DEPTH_LOOP_PIPELINE.md",
+      "lines": 113
+    },
+    {
+      "path": "scripts/apply_opacity_locked_predictions.py",
+      "lines": 113
+    },
+    {
+      "path": "scripts/extract_spherical_snake_lanes.py",
+      "lines": 113
+    },
+    {
+      "path": "scripts/validate_artifixer360_install.py",
+      "lines": 106
+    },
+    {
+      "path": "tests/test_abci_roomtour_forward14_depthpeer77_pilot.py",
+      "lines": 100
+    },
+    {
+      "path": "presentations/gauvain_seams/framework_pipeline_sources.md",
+      "lines": 88
+    },
+    {
+      "path": "presentations/gauvain_seams/framework_diagram_tool/render_drawio.sh",
+      "lines": 86
+    },
+    {
+      "path": "tests/test_generate_forward_facing14_trajectories.py",
+      "lines": 85
+    },
+    {
+      "path": "docs/artifixer_handover_overlay_files.txt",
+      "lines": 84
+    },
+    {
+      "path": "tests/test_run_erp_benchmark_colmap.py",
+      "lines": 80
+    },
+    {
+      "path": "tests/test_generate_position_first_artifixer_manifest.py",
+      "lines": 78
+    },
+    {
+      "path": "presentations/gauvain_seams/framework_diagram_tool/README.md",
+      "lines": 73
+    },
+    {
+      "path": "scripts/materialize_spherical_snake_predictions.py",
+      "lines": 72
+    },
+    {
+      "path": "tests/test_evaluate_temporal_panorama.py",
+      "lines": 70
+    },
+    {
+      "path": "tests/test_evaluate_depth_synchronized_multiview.py",
+      "lines": 66
+    },
+    {
+      "path": "tests/test_extract_spherical_snake_lanes.py",
+      "lines": 66
+    },
+    {
+      "path": "tests/test_prepare_real_depth_loop_conditions.py",
+      "lines": 66
+    },
+    {
+      "path": "scripts/generate_viewmajor_position_first_manifest.py",
+      "lines": 65
+    },
+    {
+      "path": "tests/test_evaluate_spherical_snake_turn.py",
+      "lines": 57
+    },
+    {
+      "path": "docs/framework/README.md",
+      "lines": 55
+    },
+    {
+      "path": "docs/ABCI.md",
+      "lines": 54
+    },
+    {
+      "path": "tests/test_generate_world_locked14_trajectories.py",
+      "lines": 54
+    },
+    {
+      "path": "docs/weekly_progress/2026-06-22.md",
+      "lines": 53
+    },
+    {
+      "path": "docs/weekly_progress/2026-08-03.md",
+      "lines": 52
+    },
+    {
+      "path": "tests/test_build_venhancer_erp_yaw_ensemble.py",
+      "lines": 52
+    },
+    {
+      "path": "docs/weekly_progress/2026-06-08.md",
+      "lines": 51
+    },
+    {
+      "path": "tests/test_evaluate_high_confidence_detail.py",
+      "lines": 51
+    },
+    {
+      "path": "docs/weekly_progress/2026-05-25.md",
+      "lines": 50
+    },
+    {
+      "path": "docs/weekly_progress/2026-06-01.md",
+      "lines": 50
+    },
+    {
+      "path": "docs/weekly_progress/2026-06-15.md",
+      "lines": 50
+    },
+    {
+      "path": "docs/weekly_progress/2026-06-29.md",
+      "lines": 50
+    },
+    {
+      "path": "docs/weekly_progress/README.md",
+      "lines": 50
+    },
+    {
+      "path": "tests/test_audit_artifixer3d_checkpoint_lock.py",
+      "lines": 49
+    },
+    {
+      "path": "tests/test_materialize_spherical_snake_predictions.py",
+      "lines": 49
+    },
+    {
+      "path": "docs/weekly_progress/2026-05-11.md",
+      "lines": 47
+    },
+    {
+      "path": "tests/test_joint_artifixer_manifest.py",
+      "lines": 46
+    },
+    {
+      "path": "docs/weekly_progress/2026-07-28.md",
+      "lines": 45
+    },
+    {
+      "path": "tests/test_generate_nerfstudio14_trajectories.py",
+      "lines": 45
+    },
+    {
+      "path": "tests/test_apply_opacity_locked_predictions.py",
+      "lines": 44
+    },
+    {
+      "path": "docs/weekly_progress/2026-08-18.md",
+      "lines": 35
+    },
+    {
+      "path": "tests/test_panorama_metrics.py",
+      "lines": 35
+    },
+    {
+      "path": "docs/weekly_progress/2026-05-18.md",
+      "lines": 33
+    },
+    {
+      "path": "tests/test_reorient_erp_to_source_camera.py",
+      "lines": 31
+    },
+    {
+      "path": "configs/artifixer360.example.env",
+      "lines": 30
+    },
+    {
+      "path": "tests/test_validate_artifixer360_install.py",
+      "lines": 29
+    },
+    {
+      "path": "tests/test_generate_viewmajor_position_first_manifest.py",
+      "lines": 20
+    },
+    {
+      "path": "MODIFICATIONS.md",
+      "lines": 19
+    },
+    {
+      "path": "NOTICE",
+      "lines": 10
+    },
+    {
+      "path": "tests/test_stitch_artifixer_frustums360_seams.py",
+      "lines": 10
+    },
+    {
+      "path": "presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.svg",
+      "lines": 4
+    }
+  ]
+}
