@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2026 Guilhem Carmouze.
 # SPDX-License-Identifier: Apache-2.0
 
 """Utilities for synchronizing overlapping pinhole views during diffusion.
