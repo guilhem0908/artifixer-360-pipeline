@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Guilhem Carmouze.
+# SPDX-License-Identifier: Apache-2.0
+
+name: CPU tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-subset:
+    name: CPU-only subset (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository with its full history
+        uses: actions/checkout@v4
+        with:
+          # The upstream-delta test compares against the upstream base commit.
+          fetch-depth: 0
+          # The CPU subset does not need the 3DGRUT submodule.
+          submodules: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install CPU-only dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-dev.txt
+
+      - name: Run the CPU test subset
+        run: python -m pytest -q @tests/cpu_subset.txt
