@@ -73,7 +73,7 @@ preserved in the [weekly progress archive](docs/weekly_progress/README.md).
 Click the preview to open the full comparison video. The raw 3DGRUT ERP is on
 the left and the ArtiFixer3D+ result is on the right.
 
-[![Raw 3DGRUT ERP versus ArtiFixer3D+ qualitative comparison](docs/assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k-preview.jpg)](docs/assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4)
+[![Raw 3DGRUT ERP versus ArtiFixer3D+ qualitative comparison](docs/assets/readme/comparison_raw_3dgrut_vs_artifixer3dplus_451k.webp)](docs/assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4)
 
 ## Installation
 
