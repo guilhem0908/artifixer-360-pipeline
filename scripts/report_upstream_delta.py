@@ -182,7 +182,7 @@ def main() -> None:
     report = measure(args.base, args.head)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(to_markdown(report) if args.markdown else json.dumps(report, indent=2))
 
 

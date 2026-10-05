@@ -269,7 +269,7 @@ def main() -> None:
     projector = build_projector(args.size, args.fov_degrees, args.erp_width)
     report, coverage = measure(projector, args.size, args.fov_degrees)
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
     draw(projector, coverage, report, args.figure)
     print(json.dumps(report, indent=2))
 
