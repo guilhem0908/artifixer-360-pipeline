@@ -12,7 +12,7 @@ The 360° research extension adds or changes:
 - depth, color-loop, single-surface and geometry-lock distillation controls;
 - ERP projection and stitching from overlapping perspective frustums;
 - panorama-specific quantitative diagnostics;
-- public documentation and handover utilities.
+- documentation and handover utilities.
 
 The linked `3DGRUT-ArtiFixer-360` submodule contains the corresponding 3DGRUT
 changes. Original NVIDIA notices remain in modified upstream files. Git history
