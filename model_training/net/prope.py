@@ -22,6 +22,7 @@
 # SOFTWARE.
 #
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2026 Guilhem Carmouze.
 # SPDX-License-Identifier: MIT AND Apache-2.0
 
 # How to use PRoPE attention for cross-attention:

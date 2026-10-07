@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 Sibo Wu
 # SPDX-FileCopyrightText: Copyright (c) 2018 Richard Zhang, Phillip Isola, Alexei A. Efros, Eli Shechtman, Oliver Wang
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2026 Guilhem Carmouze.
 # SPDX-License-Identifier: MIT AND BSD-2-Clause AND Apache-2.0
 
 from collections import OrderedDict
