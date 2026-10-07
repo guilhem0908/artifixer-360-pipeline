@@ -7,6 +7,10 @@ Edited after the internship: scheduler job identifiers, account-specific
 details and links to documents that are not part of this repository were
 removed. Measurements, parameters and technical conclusions are unchanged.
 
+Clip A is the 154-frame indoor clip of the first campaign; clip B is the 117-frame
+`ytb_900` clip of the reference run. Neither is distributed in this repository (see
+the footage note in the [README](../README.md)).
+
 ## Executive status
 
 The recommended reference result is the 117-frame `ytb_900` run using a
@@ -126,19 +130,19 @@ fragmented 3DGRUT render, but weakly observed lateral areas remain soft or
 smeared. It is an appearance/coherence improvement, not proof of correct
 geometry in unobserved regions.
 
-### Gauvain comparison assets
+### Clip A comparison assets
 
 - raw 3DGRUT ERP vs ArtiFixer3D+ 451k: versioned in this repository as
-  [`assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4`](assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4);
+  [`assets/readme/clip_a_154f_3DGRUT-raw-ERP_vs_ArtiFixer3Dplus-451k.mp4`](assets/readme/clip_a_154f_3DGRUT-raw-ERP_vs_ArtiFixer3Dplus-451k.mp4);
 - position-first vs direction-first ArtiFixer2D comparison video and the final
   review deck: not included in this repository; the deck's text is archived in
   [`weekly_progress/2026-08-18.md`](weekly_progress/2026-08-18.md).
 
-The Gauvain campaign is a scientific `NO-GO` for a faithful, clean,
+The clip A campaign is a scientific `NO-GO` for a faithful, clean,
 spatially continuous, temporally stable 360-degree video under the available
 observations and model weights. A job finishing successfully is not the same
 as a visual/scientific pass. See
-`docs/gauvain_artifixer_no_go_2026-07-22.md`.
+`docs/clip_a_artifixer_no_go_2026-07-22.md`.
 
 ## Canonical source snapshot
 
@@ -184,7 +188,7 @@ Expected root:
   src/ArtiFixer/
   models/artifixer-cuda12.sif
   models/colmap-4.1.1-a0d785f.sif
-  venvs/gauvain-colmap411/bin/python
+  venvs/clip-a-colmap411/bin/python
   cache/huggingface/
   data/room_tour_pipeline_v2/runs/
   logs/
@@ -459,7 +463,7 @@ lose that benefit”, not “depth+loop fixes geometry”.
 | Qwen/other independent 360 editors | completed | local cleanup with temporal hallucination/identity drift |
 | Rein3D integration | contract/preflight only | closest high-level design, but official compatible runtime/checkpoint assets were not available during the experiment |
 
-The Gauvain source camera covered approximately `12.06%` of the sphere at one
+The clip A source camera covered approximately `12.06%` of the sphere at one
 position. Most off-trajectory directions therefore have no direct same-position
 observation. No ordering trick can replace the missing evidence.
 
@@ -551,7 +555,7 @@ persistent 3D representation that is updated only from verified evidence.
 | full research chain including distillation | `scripts/abci_roomtour_standard_full_pipeline_4gpu.pbs` |
 | seam-safe VEnhancer fusion | `scripts/build_venhancer_erp_yaw_ensemble.py` |
 | runtime audit | `scripts/check_artifixer_abci_handover.py` |
-| scientific closure report | `docs/gauvain_artifixer_no_go_2026-07-22.md` |
+| scientific closure report | `docs/clip_a_artifixer_no_go_2026-07-22.md` |
 
 The matching tests are under `tests/`. The focused handover suite is:
 

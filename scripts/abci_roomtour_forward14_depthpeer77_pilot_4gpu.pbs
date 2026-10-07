@@ -4,7 +4,7 @@
 #PBS -l walltime=12:00:00
 #PBS -j oe
 
-# Scene-generic version of the validated Gauvain forward14/depthpeer77 pilot.
+# Scene-generic version of the validated clip A forward14/depthpeer77 pilot.
 # It first reconstructs the selected room tour with 3DGRUT, then runs two
 # synchronized 77-frame windows over fourteen forward-facing perspective views.
 

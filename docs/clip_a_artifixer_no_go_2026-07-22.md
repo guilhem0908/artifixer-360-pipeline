@@ -1,15 +1,19 @@
-# Gauvain panoramic restoration: final NO-GO report
+# Clip A panoramic restoration: final NO-GO report
 
 Date: 2026-07-22 (Asia/Tokyo)
 
 Edited after the internship: scheduler job identifiers and per-job log names
 were removed. Measurements and conclusions are unchanged.
 
+Clip A is the 154-frame indoor clip of this campaign; the 117-frame reference run
+of the later handover uses a second clip (clip B). Neither clip is distributed in
+this repository (see the footage note in the [README](../README.md)).
+
 Status: **CLOSED — NO-GO with the current observations, weights, and pipeline family**
 
 ## Decision
 
-The Gauvain campaign is closed. No additional sweep, prompt, seed, blending mode,
+The clip A campaign is closed. No additional sweep, prompt, seed, blending mode,
 projection, or zero-shot image editor should be run on this branch.
 
 The requested result was a panoramic video satisfying all three properties at the
@@ -22,7 +26,7 @@ same time:
 3. temporally stable, so that surfaces and objects do not change between frames.
 
 No tested result satisfies all three. This is not a claim that panoramic video
-restoration is impossible in general. It is a NO-GO under the available Gauvain
+restoration is impossible in general. It is a NO-GO under the available clip A
 observations and the current pretrained-model approach.
 
 At closure time no job of this campaign was running or queued, so nothing had to be
@@ -52,12 +56,12 @@ cubemap adjacencies.
 
 The source files for these measurements were stored on the cluster under:
 
-- `/path/to/artifixer/outputs/gauvain_base30k_cubemap25_fov110_rules_retry1/`
-- `/path/to/artifixer/outputs/gauvain_cubemap_1216_fov100_120k/`
-- `/path/to/artifixer/outputs/gauvain_joint14_a3d_continuous_locked_qc/`
-- `/path/to/artifixer/outputs/gauvain_seq15_480k_cubefaces_artifixer/`
-- `/path/to/artifixer/outputs/gauvain_seq15_480k_cubefaces_artifixer_fov110/`
-- `/path/to/artifixer/outputs/gauvain_seq15_clean_20260719/`
+- `/path/to/artifixer/outputs/clip_a_base30k_cubemap25_fov110_rules_retry1/`
+- `/path/to/artifixer/outputs/clip_a_cubemap_1216_fov100_120k/`
+- `/path/to/artifixer/outputs/clip_a_joint14_a3d_continuous_locked_qc/`
+- `/path/to/artifixer/outputs/clip_a_seq15_480k_cubefaces_artifixer/`
+- `/path/to/artifixer/outputs/clip_a_seq15_480k_cubefaces_artifixer_fov110/`
+- `/path/to/artifixer/outputs/clip_a_seq15_clean_20260719/`
 
 The zero seam score of the geometry-locked variant is not a clean-video success. It
 is the empirical lower bound “coherent but dirty”: positions, rotations, scales, and
@@ -83,9 +87,9 @@ not be removed.
 
 Metric files:
 
-- `/path/to/artifixer/outputs/gauvain_ns14_base30k_pilot_h000_h060/temporal_loop/metrics.json`
-- `/path/to/artifixer/outputs/gauvain_worldlocked14_base30k_guided/depth_canonical/metrics.json`
-- `/path/to/artifixer/outputs/gauvain_worldlocked14_clean154_depth/depth_loop_targets/metrics.json`
+- `/path/to/artifixer/outputs/clip_a_ns14_base30k_pilot_h000_h060/temporal_loop/metrics.json`
+- `/path/to/artifixer/outputs/clip_a_worldlocked14_base30k_guided/depth_canonical/metrics.json`
+- `/path/to/artifixer/outputs/clip_a_worldlocked14_clean154_depth/depth_loop_targets/metrics.json`
 
 ### Successful jobs that did not produce an acceptable video
 
@@ -94,8 +98,8 @@ failed computation being mistaken for a negative result.
 
 | Job name | Walltime | Technical outcome |
 |---|---:|---|
-| `gauvain-closedloop14` | 00:18:07 | Latent/closed-loop pilot completed; visual inconsistency remained |
-| `gauvain-noisesync14` | 00:17:46 | Noise synchronization completed; smoothing/zones remained |
+| `clip-a-closedloop14` | 00:18:07 | Latent/closed-loop pilot completed; visual inconsistency remained |
+| `clip-a-noisesync14` | 00:17:46 | Noise synchronization completed; smoothing/zones remained |
 | `g15-final-ply` | 00:02:08 | The 15-stage chain reached the final 480k PLY; geometric artifacts remained |
 | `qwen-edit360-full` | 00:36:43 | 154/154 edited frames; temporal hallucination remained |
 
@@ -168,17 +172,17 @@ than faithful, or be supported by additional ground truth.
 
 These files were verified present locally at closure time:
 
-- Raw/seamless ERP: `/path/to/local/data/gauvain_480k_360_equirectangular_seamless_4096x2048_15fps.mp4`
-- Cubeface ArtiFixer feather: `/path/to/local/data/gauvain_480k_cubefaces_artifixer_fov110_feather180_4096x2048_15fps.mp4`
-- Loop-closed cubeface: `/path/to/local/data/gauvain_480k_cubefaces_fov110_loopclosed_feather180_4096x2048_15fps.mp4`
-- Rules 35k: `/path/to/local/data/gauvain_base30k_cubemap25_a3d_rules35k_feather180_4096x2048_15fps.mp4`
-- Rules 90k: `/path/to/local/data/gauvain_ns14_25_rules90k_4096x2048_15fps.mp4`
-- Overlap18 Fixer: `/path/to/local/data/gauvain_481k_overlap18_fixer_feather_full_1024x512_15fps.mp4`
-- OmniGS: `/path/to/local/data/gauvain_481k_omnigs_erp_full154_1024x512_15fps.mp4`
-- Qwen-Edit-360: `/path/to/local/data/gauvain_481k_overlap18_qwen_edit360/abci_q_output/gauvain_481k_overlap18_qwen_edit360_1024x512_15fps.mp4`
+- Raw/seamless ERP: `/path/to/local/data/clip_a_480k_360_equirectangular_seamless_4096x2048_15fps.mp4`
+- Cubeface ArtiFixer feather: `/path/to/local/data/clip_a_480k_cubefaces_artifixer_fov110_feather180_4096x2048_15fps.mp4`
+- Loop-closed cubeface: `/path/to/local/data/clip_a_480k_cubefaces_fov110_loopclosed_feather180_4096x2048_15fps.mp4`
+- Rules 35k: `/path/to/local/data/clip_a_base30k_cubemap25_a3d_rules35k_feather180_4096x2048_15fps.mp4`
+- Rules 90k: `/path/to/local/data/clip_a_ns14_25_rules90k_4096x2048_15fps.mp4`
+- Overlap18 Fixer: `/path/to/local/data/clip_a_481k_overlap18_fixer_feather_full_1024x512_15fps.mp4`
+- OmniGS: `/path/to/local/data/clip_a_481k_omnigs_erp_full154_1024x512_15fps.mp4`
+- Qwen-Edit-360: `/path/to/local/data/clip_a_481k_overlap18_qwen_edit360/abci_q_output/clip_a_481k_overlap18_qwen_edit360_1024x512_15fps.mp4`
 - Synchronization comparison: `/path/to/local/data/erp_fixer_models_test_20260722/videos/comparison_artifixer_sync_modes.mp4`
-- Feather/multiband still: `/path/to/local/data/gauvain_481k_overlap18_fov120_qc/qc_compare_frame3.png`
-- Graph-cut still: `/path/to/local/data/gauvain_481k_overlap18_fov120_qc/qc_compare_graphcut_frame3.png`
+- Feather/multiband still: `/path/to/local/data/clip_a_481k_overlap18_fov120_qc/qc_compare_frame3.png`
+- Graph-cut still: `/path/to/local/data/clip_a_481k_overlap18_fov120_qc/qc_compare_graphcut_frame3.png`
 
 ## Do not repeat
 

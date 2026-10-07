@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -N gauvain-pf77-a2-v2
+#PBS -N clip-a-pf77-a2-v2
 #PBS -l rt_QF=1
 #PBS -l walltime=12:00:00
 #PBS -j oe
@@ -9,10 +9,10 @@ set -euo pipefail
 : "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
 REPO="$AFROOT/src/ArtiFixer"
 SIF="$AFROOT/models/artifixer-cuda12.sif"
-SOURCE_SCENE_ID=gauvain_joint14_consistent_v1
+SOURCE_SCENE_ID=clip_a_joint14_consistent_v1
 SOURCE_SCENE="$AFROOT/data/$SOURCE_SCENE_ID"
-SOURCE_TRANSFORMS="$AFROOT/data/gauvain_colmap_all154_clean/3dgrut_input/gauvain_colmap_all154_clean/nerfstudio/transforms.json"
-RUN_ID=gauvain_positionfirst77_artifixer2d_v2
+SOURCE_TRANSFORMS="$AFROOT/data/clip_a_colmap_all154_clean/3dgrut_input/clip_a_colmap_all154_clean/nerfstudio/transforms.json"
+RUN_ID=clip_a_positionfirst77_artifixer2d_v2
 RUN_ROOT="$AFROOT/outputs/$RUN_ID"
 MANIFEST_DIR="$RUN_ROOT/manifests"
 INFERENCE_MANIFEST="$MANIFEST_DIR/position_first_manifest.json"
@@ -47,7 +47,7 @@ python3 scripts/generate_viewmajor_position_first_manifest.py \
 python3 - "$INFERENCE_MANIFEST" <<'PY'
 import json, sys
 manifest = json.load(open(sys.argv[1]))
-assert manifest["layout"] == "gauvain_position_first_14view_snake_windows"
+assert manifest["layout"] == "clip_a_position_first_14view_snake_windows"
 assert manifest["source_target_layout"] == "view_major"
 assert manifest["frame_count"] == 154
 assert manifest["views_per_position"] == 14
@@ -112,12 +112,12 @@ singularity exec \
     --env PYTHONPATH=/workspace/artifixer "$SIF" \
     python /workspace/artifixer/scripts/reorient_erp_to_source_camera.py \
         --input-dir /work/outputs/$RUN_ID/panorama_world/frames \
-        --source-transforms /work/data/gauvain_colmap_all154_clean/3dgrut_input/gauvain_colmap_all154_clean/nerfstudio/transforms.json \
+        --source-transforms /work/data/clip_a_colmap_all154_clean/3dgrut_input/clip_a_colmap_all154_clean/nerfstudio/transforms.json \
         --output-dir /work/outputs/$RUN_ID/panorama_source/frames \
         --reference-frame 0
 test "$(find "$PANORAMA_SOURCE" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 154
 
-FINAL_VIDEO="$RESULTS/gauvain_positionfirst77_artifixer2d_source_aligned_1024x512_15fps.mp4"
+FINAL_VIDEO="$RESULTS/clip_a_positionfirst77_artifixer2d_source_aligned_1024x512_15fps.mp4"
 /usr/bin/ffmpeg -nostdin -hide_banner -loglevel error -y \
     -framerate 15 -start_number 0 -i "$PANORAMA_SOURCE/%05d.png" -frames:v 154 \
     -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \

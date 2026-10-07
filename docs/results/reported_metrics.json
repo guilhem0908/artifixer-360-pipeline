@@ -41,7 +41,7 @@
       "result": "negative",
       "meaning": "Mean seam-failure fraction over the 12 cubemap face adjacencies (an adjacency fails above 0.1), raw 120k cubemap versus the same faces repaired independently by ArtiFixer, and the geometry-locked 3D variant. Lower is better. The locked variant is seam-consistent only because geometry cannot move; its geometric artifacts remain.",
       "values": {"raw_cubemap_mean": "0.3420", "raw_cubemap_failed_adjacencies": "11/12", "per_face_artifixer_mean": "0.8328", "per_face_artifixer_failed_adjacencies": "12/12", "geometry_locked_mean": "0.0000", "geometry_locked_failed_adjacencies": "0/12"},
-      "source": "docs/gauvain_artifixer_no_go_2026-07-22.md"
+      "source": "docs/clip_a_artifixer_no_go_2026-07-22.md"
     },
     {
       "id": "full_run_154_frames",
@@ -55,7 +55,7 @@
       "result": "diagnostic",
       "meaning": "Share of the full sphere seen by the source pinhole camera at one pose (rectangular solid angle of a 1972 x 1087 image with a 924.0169 px focal length). This figure is recomputed from the intrinsics by the test suite.",
       "values": {"sphere_fraction": "12.06%", "field_of_view_degrees": "93.72° × 60.93°", "focal_length_px": "924.0169"},
-      "source": "docs/gauvain_artifixer_no_go_2026-07-22.md"
+      "source": "docs/clip_a_artifixer_no_go_2026-07-22.md"
     },
     {
       "id": "splatfacto_baseline",

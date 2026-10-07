@@ -23,13 +23,13 @@ Derivative of [NVIDIA ArtiFixer](https://github.com/nv-tlabs/ArtiFixer) (Apache-
 ![Container: PyTorch 2.11, CUDA 12.8](https://img.shields.io/badge/container-PyTorch%202.11%20%7C%20CUDA%2012.8-ee4c2c)
 ![Status: research code](https://img.shields.io/badge/status-research%20code-orange)
 
-[![Raw 3DGRUT equirectangular render on the left, ArtiFixer3D+ output on the right, 154 frames](docs/assets/readme/comparison_raw_3dgrut_vs_artifixer3dplus_451k.webp)](docs/assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4)
+[![Raw 3DGRUT equirectangular render on the left, ArtiFixer3D+ output on the right, 154 frames](docs/assets/readme/comparison_raw_3dgrut_vs_artifixer3dplus_451k.webp)](docs/assets/readme/clip_a_154f_3DGRUT-raw-ERP_vs_ArtiFixer3Dplus-451k.mp4)
 
 *Left: raw 3DGRUT render of the reconstructed scene, projected to ERP. Right: the
 same 154 frames and camera path after the first ArtiFixer3D+ run (labelled 451k).
 Most holes and splatting noise are removed; residual warping and duplicated
 structures remain, and regions the camera never saw are generated, not observed.
-Click for the [full-resolution MP4](docs/assets/readme/gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4)
+Click for the [full-resolution MP4](docs/assets/readme/clip_a_154f_3DGRUT-raw-ERP_vs_ArtiFixer3Dplus-451k.mp4)
 (2048 x 512, 10 s).*
 
 > **Research status.** The recipes are documented and the tooling is tested, but
@@ -136,10 +136,10 @@ and the source records agree. Lower is better unless stated otherwise.
 | Same run: edge strength kept in high-confidence regions (1 = fully kept) | 0.4859 median, 0.3653 for the weakest view | Caveat: part of the stability comes with softer detail; weakly observed lateral areas stay soft or smeared | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
 | Same run: COLMAP pose reconstruction | 117/117 images registered, 24,933 points, median reprojection error about 0.952 px | Context | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
 | Optional two-yaw VEnhancer post-process on that output: temporal warp MAE, edge flicker | 0.02020 → 0.01339 (-33.7%); 0.01627 → 0.01009 (-38.0%) | Perceptual smoothing only; it can reinterpret weak texture and validates no geometry | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
-| Repairing six cubemap faces independently: mean seam-failure fraction over the 12 face adjacencies (fails above 0.1), raw → repaired | 0.3420 (11/12 failing) → 0.8328 (12/12 failing) | **Negative.** Cleaning each face made the seams much worse | [NO-GO report](docs/gauvain_artifixer_no_go_2026-07-22.md) |
-| Geometry-locked 3D variant, same seam metric | 0.0000 (0/12 failing) | Consistent only because geometry cannot move: the geometric artifacts stay | [NO-GO report](docs/gauvain_artifixer_no_go_2026-07-22.md) |
+| Repairing six cubemap faces independently: mean seam-failure fraction over the 12 face adjacencies (fails above 0.1), raw → repaired | 0.3420 (11/12 failing) → 0.8328 (12/12 failing) | **Negative.** Cleaning each face made the seams much worse | [NO-GO report](docs/clip_a_artifixer_no_go_2026-07-22.md) |
+| Geometry-locked 3D variant, same seam metric | 0.0000 (0/12 failing) | Consistent only because geometry cannot move: the geometric artifacts stay | [NO-GO report](docs/clip_a_artifixer_no_go_2026-07-22.md) |
 | Full 154-frame, fourteen-direction run (2,156 perspective views, 1024 x 512 ERP) | `PASS_FULL_SPHERICAL_COVERAGE`, then `QC_FAIL_VISUAL_AND_TEMPORAL`: circular seam 7.65x local contrast; max temporal warp MAE 0.1298 (threshold 0.10); max temporal p95 0.4196 (threshold 0.30); max black fraction 3.77% | **Negative.** Complete coverage and exact source-pixel reinsertion, but the output failed the acceptance gates, which led to a geometry-first redesign | [progress report](docs/weekly_progress/2026-08-09.md) |
-| Share of the sphere seen by the source camera at one pose | 12.06% (93.72° × 60.93°, focal 924.0169 px) | Root cause of the difficulty; recomputed from the intrinsics by the tests | [NO-GO report](docs/gauvain_artifixer_no_go_2026-07-22.md) |
+| Share of the sphere seen by the source camera at one pose | 12.06% (93.72° × 60.93°, focal 924.0169 px) | Root cause of the difficulty; recomputed from the intrinsics by the tests | [NO-GO report](docs/clip_a_artifixer_no_go_2026-07-22.md) |
 | Earlier baseline, not this pipeline: video → COLMAP → Splatfacto, 70/30 split | PSNR 26.08 dB / SSIM 0.91 at 30k iterations; 28.69 dB / 0.94 at 60k | Context for the reconstruction stage | [weekly note](docs/weekly_progress/2026-05-18.md) |
 
 ![First ArtiFixer3D+ run at 451k on the left versus depth and loop distillation on the right](docs/assets/readme/result_451k_vs_depth_loop_distillation.png)
@@ -150,7 +150,7 @@ this is a qualitative diagnostic, not a claim of correct geometry.*
 
 The complete experiment matrix, the closed campaign and the week-by-week notes are
 in the [dated handover](docs/artifixer_abci_handover_2026-08-20.md), the
-[NO-GO report](docs/gauvain_artifixer_no_go_2026-07-22.md), the
+[NO-GO report](docs/clip_a_artifixer_no_go_2026-07-22.md), the
 [weekly progress archive](docs/weekly_progress/README.md) and the
 [final internship report (PDF)](docs/assets/readme/Rapport_de_stage_2026_CARMOUZE_Guilhem.pdf).
 
@@ -158,7 +158,7 @@ in the [dated handover](docs/artifixer_abci_handover_2026-08-20.md), the
 
 | Component | Status | Evidence |
 |---|---|---|
-| Trajectory and manifest generators, frustum-to-ERP stitcher, QC metrics, run-contract and job-script checks | Works on a CPU | 140 tests in [`tests/cpu_subset.txt`](tests/cpu_subset.txt), run by CI |
+| Trajectory and manifest generators, frustum-to-ERP stitcher, QC metrics, run-contract and job-script checks | Works on a CPU | 141 tests in [`tests/cpu_subset.txt`](tests/cpu_subset.txt), run by CI |
 | 117-frame synchronized run with a forward-facing 14-view rig | Passed its depth, detail and temporal gates during the internship | Dated handover |
 | Full 154-frame, fourteen-direction ERP video | Complete coverage, **failed** the visual and temporal gates | Progress report of 2026-08-09 |
 | Depth-aware synchronisation | Improves agreement of the repaired views; the gain is **not preserved** by the current distillation | Results table |
@@ -220,7 +220,7 @@ housekeeping commits (this README, the CPU test workflow, the figures) carry a
 
 | Stage | Hardware | Software | Recorded runtime |
 |---|---|---|---|
-| Tooling, tests and README figures | Any CPU, no GPU | Python 3.10 or newer with [`requirements-dev.txt`](requirements-dev.txt) (NumPy, OpenCV, Pillow, PyTorch CPU, pytest) | Dependencies install in about 80 s; the 140 tests take about 5 s in a Python 3.12 Linux container and about 30 s on Windows 11 with Python 3.14 (laptop CPU); each figure script takes under 30 s |
+| Tooling, tests and README figures | Any CPU, no GPU | Python 3.10 or newer with [`requirements-dev.txt`](requirements-dev.txt) (NumPy, OpenCV, Pillow, PyTorch CPU, pytest) | Dependencies install in about 80 s; the 141 tests take about 14 s on Windows 11 with Python 3.14 (laptop CPU); each figure script takes under 30 s |
 | Pose reconstruction | One `rt_QG` node of the ABCI cluster | COLMAP 4.1.1 with ALIKED + LightGlue, in its own container | Not recorded |
 | 3DGRUT scene, joint inference, stitching, QC | One `rt_QF` node with 4 GPUs (`torchrun --nproc_per_node=4`, context parallel size 4). The distillation job notes that geometry-locked training can fill almost all of an 80 GiB GPU; the GPU model is not recorded | Image built from [`Dockerfile.cuda12`](Dockerfile.cuda12) (`nvcr.io/nvidia/pytorch:25.01-py3`, PyTorch 2.11.0 / CUDA 12.8), run through Singularity under PBS | 00:20:21 for the final job of the 117-frame reference run |
 | Model assets | Disk and Hugging Face access | `nvidia/ArtiFixer` (`artifixer-14b.pt`), `Ruicheng/moge-2-vitl-normal`, `Wan-AI/Wan2.1-T2V-14B-Diffusers` | — |
@@ -238,7 +238,7 @@ source .venv/bin/activate                 # Windows: .venv\Scripts\activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements-dev.txt
 
-python -m pytest -q @tests/cpu_subset.txt            # 140 tests
+python -m pytest -q @tests/cpu_subset.txt            # 141 tests
 python scripts/render_rig_coverage_figure.py         # rig coverage statistics and figure
 python scripts/report_upstream_delta.py --markdown   # the table above, from Git
 ```

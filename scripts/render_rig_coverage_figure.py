@@ -54,7 +54,7 @@ DEFAULT_FIGURE = REPO_ROOT / "docs" / "assets" / "readme" / "rig_coverage.png"
 DEFAULT_REPORT = REPO_ROOT / "docs" / "results" / "rig_coverage.json"
 
 # Intrinsics of the source video used during development, as recorded in
-# docs/gauvain_artifixer_no_go_2026-07-22.md.
+# docs/clip_a_artifixer_no_go_2026-07-22.md.
 SOURCE_WIDTH = 1972
 SOURCE_HEIGHT = 1087
 SOURCE_FOCAL_PX = 924.0169

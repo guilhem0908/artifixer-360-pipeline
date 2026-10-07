@@ -1,6 +1,6 @@
 # Weekly progress archive
 
-This directory preserves the technical progression of the Gauvain/ArtiFixer-360 internship work as searchable Markdown. It covers every dated weekly/progress document that belonged to this workstream.
+This directory preserves the technical progression of the ArtiFixer-360 internship work as searchable Markdown. It covers every dated weekly/progress document that belonged to this workstream.
 
 The original presentations are large—approximately 15–75 MB each—and together exceed 350 MB. To keep this Git repository practical to clone, the archive stores their technical text, tables and conclusions here. The original slide decks, with their figures and videos, are internal documents and are not included.
 

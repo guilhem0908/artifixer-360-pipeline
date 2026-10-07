@@ -1,8 +1,8 @@
 # ArtiFixer-360 framework
 
-This directory indexes the final scientific framework delivered during the Gauvain panoramic-video work. The canonical editable diagram, its generator, validators and rendered artifacts are versioned under [`presentations/gauvain_seams`](../../presentations/gauvain_seams/).
+This directory indexes the final scientific framework delivered during the clip A panoramic-video work. The canonical editable diagram, its generator, validators and rendered artifacts are versioned under [`presentations/clip_a_seams`](../../presentations/clip_a_seams/).
 
-![ArtiFixer-360 framework](../../presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.png)
+![ArtiFixer-360 framework](../../presentations/clip_a_seams/framework_diagram_tool/generated/artifixer360_framework.png)
 
 ## Pipeline represented
 
@@ -14,30 +14,30 @@ The diagram makes one limitation explicit: ArtiFixer is a perspective video mode
 
 | File | Purpose |
 |---|---|
-| [`artifixer360_framework.drawio`](../../presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.drawio) | Canonical editable DrawIO source |
-| [`artifixer360_framework.svg`](../../presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.svg) | Vector export with embedded diagram data |
-| [`artifixer360_framework.pdf`](../../presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.pdf) | Vector PDF export |
-| [`artifixer360_framework.png`](../../presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.png) | Review image |
-| [`build_framework_drawio.py`](../../presentations/gauvain_seams/framework_diagram_tool/build_framework_drawio.py) | Editable-source generator |
-| [`render_drawio.sh`](../../presentations/gauvain_seams/framework_diagram_tool/render_drawio.sh) | Pinned DrawIO renderer |
-| [`validate_drawio_framework.py`](../../presentations/gauvain_seams/framework_diagram_tool/validate_drawio_framework.py) | Structural and export validator |
-| [`Gauvain_Framework_Pipeline_Current_Editable.pptx`](../../presentations/gauvain_seams/Gauvain_Framework_Pipeline_Current_Editable.pptx) | Independently editable PowerPoint delivery |
-| [`framework_pipeline_sources.md`](../../presentations/gauvain_seams/framework_pipeline_sources.md) | Scientific and visual-composition provenance |
+| [`artifixer360_framework.drawio`](../../presentations/clip_a_seams/framework_diagram_tool/generated/artifixer360_framework.drawio) | Canonical editable DrawIO source |
+| [`artifixer360_framework.svg`](../../presentations/clip_a_seams/framework_diagram_tool/generated/artifixer360_framework.svg) | Vector export with embedded diagram data |
+| [`artifixer360_framework.pdf`](../../presentations/clip_a_seams/framework_diagram_tool/generated/artifixer360_framework.pdf) | Vector PDF export |
+| [`artifixer360_framework.png`](../../presentations/clip_a_seams/framework_diagram_tool/generated/artifixer360_framework.png) | Review image |
+| [`build_framework_drawio.py`](../../presentations/clip_a_seams/framework_diagram_tool/build_framework_drawio.py) | Editable-source generator |
+| [`render_drawio.sh`](../../presentations/clip_a_seams/framework_diagram_tool/render_drawio.sh) | Pinned DrawIO renderer |
+| [`validate_drawio_framework.py`](../../presentations/clip_a_seams/framework_diagram_tool/validate_drawio_framework.py) | Structural and export validator |
+| [`Clip_A_Framework_Pipeline_Current_Editable.pptx`](../../presentations/clip_a_seams/Clip_A_Framework_Pipeline_Current_Editable.pptx) | Independently editable PowerPoint delivery |
+| [`framework_pipeline_sources.md`](../../presentations/clip_a_seams/framework_pipeline_sources.md) | Scientific and visual-composition provenance |
 
-The two embedded example images used by the deterministic generator are preserved in `presentations/gauvain_seams/framework_figure_20260731/assets/`.
+The two embedded example images used by the deterministic generator are preserved in `presentations/clip_a_seams/framework_figure_20260731/assets/`.
 
 ## Validate the checked-in framework
 
 From the repository root:
 
 ```bash
-python presentations/gauvain_seams/framework_diagram_tool/validate_drawio_framework.py
+python presentations/clip_a_seams/framework_diagram_tool/validate_drawio_framework.py
 ```
 
 To rebuild all DrawIO exports:
 
 ```bash
-cd presentations/gauvain_seams/framework_diagram_tool
+cd presentations/clip_a_seams/framework_diagram_tool
 ./render_drawio.sh
 ./validate_drawio_framework.py
 ```
@@ -47,7 +47,7 @@ The renderer bootstraps DrawIO Desktop 31.1.5 and Xvfb into a temporary cache on
 The independent PowerPoint artifact can be checked when `python-pptx` and Pillow are installed:
 
 ```bash
-python presentations/gauvain_seams/validate_framework_pipeline.py
+python presentations/clip_a_seams/validate_framework_pipeline.py
 ```
 
 ## Scope

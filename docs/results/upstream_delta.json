@@ -212,7 +212,7 @@
       "lines": 904
     },
     {
-      "path": "presentations/gauvain_seams/framework_diagram_tool/build_framework_drawio.py",
+      "path": "presentations/clip_a_seams/framework_diagram_tool/build_framework_drawio.py",
       "lines": 762
     },
     {
@@ -248,7 +248,7 @@
       "lines": 567
     },
     {
-      "path": "presentations/gauvain_seams/framework_diagram_tool/validate_drawio_framework.py",
+      "path": "presentations/clip_a_seams/framework_diagram_tool/validate_drawio_framework.py",
       "lines": 499
     },
     {
@@ -268,7 +268,7 @@
       "lines": 331
     },
     {
-      "path": "presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.drawio",
+      "path": "presentations/clip_a_seams/framework_diagram_tool/generated/artifixer360_framework.drawio",
       "lines": 328
     },
     {
@@ -328,7 +328,7 @@
       "lines": 213
     },
     {
-      "path": "docs/gauvain_artifixer_no_go_2026-07-22.md",
+      "path": "docs/clip_a_artifixer_no_go_2026-07-22.md",
       "lines": 205
     },
     {
@@ -384,7 +384,7 @@
       "lines": 158
     },
     {
-      "path": "presentations/gauvain_seams/validate_framework_pipeline.py",
+      "path": "presentations/clip_a_seams/validate_framework_pipeline.py",
       "lines": 154
     },
     {
@@ -396,7 +396,7 @@
       "lines": 142
     },
     {
-      "path": "scripts/abci_gauvain_positionfirst77_artifixer2d_v2.pbs",
+      "path": "scripts/abci_clip_a_positionfirst77_artifixer2d_v2.pbs",
       "lines": 139
     },
     {
@@ -408,7 +408,7 @@
       "lines": 137
     },
     {
-      "path": "scripts/abci_prepare_gauvain_spherical_snake14_full.pbs",
+      "path": "scripts/abci_prepare_clip_a_spherical_snake14_full.pbs",
       "lines": 136
     },
     {
@@ -428,7 +428,7 @@
       "lines": 124
     },
     {
-      "path": "scripts/abci_inference_gauvain_spherical_snake14_full_4gpu.pbs",
+      "path": "scripts/abci_inference_clip_a_spherical_snake14_full_4gpu.pbs",
       "lines": 121
     },
     {
@@ -460,11 +460,11 @@
       "lines": 100
     },
     {
-      "path": "presentations/gauvain_seams/framework_pipeline_sources.md",
+      "path": "presentations/clip_a_seams/framework_pipeline_sources.md",
       "lines": 88
     },
     {
-      "path": "presentations/gauvain_seams/framework_diagram_tool/render_drawio.sh",
+      "path": "presentations/clip_a_seams/framework_diagram_tool/render_drawio.sh",
       "lines": 86
     },
     {
@@ -484,7 +484,7 @@
       "lines": 78
     },
     {
-      "path": "presentations/gauvain_seams/framework_diagram_tool/README.md",
+      "path": "presentations/clip_a_seams/framework_diagram_tool/README.md",
       "lines": 73
     },
     {
@@ -636,7 +636,7 @@
       "lines": 10
     },
     {
-      "path": "presentations/gauvain_seams/framework_diagram_tool/generated/artifixer360_framework.svg",
+      "path": "presentations/clip_a_seams/framework_diagram_tool/generated/artifixer360_framework.svg",
       "lines": 4
     }
   ]

@@ -31,7 +31,7 @@ REQUIRED_DIRECTORIES = (
 )
 
 REQUIRED_EXECUTABLES = (
-    "venvs/gauvain-colmap411/bin/python",
+    "venvs/clip-a-colmap411/bin/python",
 )
 
 REQUIRED_REPOSITORY_FILES = (

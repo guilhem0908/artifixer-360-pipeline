@@ -7,7 +7,7 @@ data_processing/run_artifixer3d.py
 data_processing/sparse_recon/metric_alignment.py
 docs/artifixer_abci_handover_2026-08-20.md
 docs/artifixer_handover_overlay_files.txt
-docs/gauvain_artifixer_no_go_2026-07-22.md
+docs/clip_a_artifixer_no_go_2026-07-22.md
 model_eval/datasets/reconstructed_colmap_eval.py
 model_eval/lpipsPytorch/modules/utils.py
 model_eval/reconstructed_colmap_evalsets.py
@@ -21,9 +21,9 @@ model_training/pipeline/kv_cache_pipeline.py
 model_training/pipeline/pipeline.py
 model_training/pipeline/pipeline_base.py
 model_training/utils/train_utils.py
-scripts/abci_gauvain_positionfirst77_artifixer2d_v2.pbs
-scripts/abci_inference_gauvain_spherical_snake14_full_4gpu.pbs
-scripts/abci_prepare_gauvain_spherical_snake14_full.pbs
+scripts/abci_clip_a_positionfirst77_artifixer2d_v2.pbs
+scripts/abci_inference_clip_a_spherical_snake14_full_4gpu.pbs
+scripts/abci_prepare_clip_a_spherical_snake14_full.pbs
 scripts/abci_roomtour_forward14_depthpeer77_pilot_4gpu.pbs
 scripts/abci_roomtour_standard_colmap.pbs
 scripts/abci_roomtour_standard_full_pipeline_4gpu.pbs

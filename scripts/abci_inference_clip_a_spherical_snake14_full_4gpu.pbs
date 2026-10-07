@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -N gauvain-snake14-af
+#PBS -N clip-a-snake14-af
 #PBS -l rt_QF=1
 #PBS -l walltime=12:00:00
 #PBS -j oe
@@ -9,7 +9,7 @@ set -euo pipefail
 : "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
 REPO="$AFROOT/src/ArtiFixer"
 SIF="$AFROOT/models/artifixer-cuda12.sif"
-SCENE_ID=gauvain_wlsnake14_full154_v1
+SCENE_ID=clip_a_wlsnake14_full154_v1
 SCENE="$AFROOT/data/$SCENE_ID"
 SAVE_DIR="$AFROOT/outputs/$SCENE_ID/artifixer"
 STATUS_DIR="$AFROOT/outputs/$SCENE_ID/status"
@@ -99,20 +99,20 @@ singularity exec --bind "$REPO:/workspace/artifixer" --bind "$AFROOT:/work" \
 /usr/bin/ffmpeg -nostdin -hide_banner -loglevel error -y \
     -framerate 15 -start_number 0 -i "$HARD_PANO/frames/%05d.png" -frames:v 154 \
     -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
-    "$SAVE_DIR/gauvain_snake14_2d_hard_1024x512_15fps.mp4"
+    "$SAVE_DIR/clip_a_snake14_2d_hard_1024x512_15fps.mp4"
 /usr/bin/ffmpeg -nostdin -hide_banner -loglevel error -y \
     -framerate 15 -start_number 0 -i "$FEATHER_PANO/frames/%05d.png" -frames:v 154 \
     -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart \
-    "$SAVE_DIR/gauvain_snake14_2d_feather_1024x512_15fps.mp4"
-test -s "$SAVE_DIR/gauvain_snake14_2d_hard_1024x512_15fps.mp4"
-test -s "$SAVE_DIR/gauvain_snake14_2d_feather_1024x512_15fps.mp4"
+    "$SAVE_DIR/clip_a_snake14_2d_feather_1024x512_15fps.mp4"
+test -s "$SAVE_DIR/clip_a_snake14_2d_hard_1024x512_15fps.mp4"
+test -s "$SAVE_DIR/clip_a_snake14_2d_feather_1024x512_15fps.mp4"
 
 QC_VERDICT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' "$SAVE_DIR/snake_turn_qc.json")
 {
     printf 'JOB_ID=%q\n' "${PBS_JOBID:-local}"
     printf 'SAVE_DIR=%q\n' "$SAVE_DIR"
-    printf 'HARD_VIDEO=%q\n' "$SAVE_DIR/gauvain_snake14_2d_hard_1024x512_15fps.mp4"
-    printf 'FEATHER_VIDEO=%q\n' "$SAVE_DIR/gauvain_snake14_2d_feather_1024x512_15fps.mp4"
+    printf 'HARD_VIDEO=%q\n' "$SAVE_DIR/clip_a_snake14_2d_hard_1024x512_15fps.mp4"
+    printf 'FEATHER_VIDEO=%q\n' "$SAVE_DIR/clip_a_snake14_2d_feather_1024x512_15fps.mp4"
     printf 'QC_REPORT=%q\n' "$SAVE_DIR/snake_turn_qc.json"
     printf 'QC_VERDICT=%q\n' "$QC_VERDICT"
     printf 'PREDICTION_COUNT=2310\nLANE_OUTPUT_COUNT=2156\nINFERENCE_ITEM_COUNT=71\n'

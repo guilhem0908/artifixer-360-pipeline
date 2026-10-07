@@ -28,7 +28,7 @@ def test_paths_are_assigned_to_the_expected_area():
     assert area_of("data_processing/artifixer3d.py") == "model_and_data_code"
     assert area_of("tests/test_panorama_metrics.py") == "tests"
     assert area_of("docs/HANDOVER.md") == "documentation"
-    assert area_of("presentations/gauvain_seams/validate_framework_pipeline.py") == "diagram_tooling"
+    assert area_of("presentations/clip_a_seams/validate_framework_pipeline.py") == "diagram_tooling"
     assert area_of("README.md") == "top_level"
     assert area_of("configs/artifixer360.example.env") == "top_level"
 

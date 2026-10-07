@@ -33,7 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ASSET_DIR = REPO_ROOT / "docs" / "assets" / "readme"
-DEFAULT_SOURCE = ASSET_DIR / "gauvain_154f_3DGRUT-brut-ERP_vs_ArtiFixer3Dplus-451k.mp4"
+DEFAULT_SOURCE = ASSET_DIR / "clip_a_154f_3DGRUT-raw-ERP_vs_ArtiFixer3Dplus-451k.mp4"
 DEFAULT_WEBP = ASSET_DIR / "comparison_raw_3dgrut_vs_artifixer3dplus_451k.webp"
 DEFAULT_STILL = ASSET_DIR / "comparison_raw_3dgrut_vs_artifixer3dplus_451k_preview.jpg"
 

@@ -7,7 +7,9 @@
 The script compares two commits with ``git diff --numstat`` and groups the
 result by area. By default it compares the upstream base commit of
 ``nv-tlabs/ArtiFixer`` with the last commit of the 2026 internship, so later
-housekeeping commits do not inflate the figures.
+housekeeping commits do not inflate the figures. File paths in the report use the
+names the files have in the checked-out tree, so files renamed after the
+internship commit are listed under their current name.
 
 It needs a full (non-shallow) clone and nothing but Git and the standard
 library:
@@ -66,6 +68,16 @@ def commit_exists(revision: str) -> bool:
     return completed.returncode == 0
 
 
+def current_names(head: str) -> dict[str, str]:
+    """Map the paths of ``head`` that were renamed since to their current names."""
+    renamed: dict[str, str] = {}
+    for line in git("diff", "-M", "--name-status", head).splitlines():
+        code, *paths = line.split("\t")
+        if code.startswith("R"):
+            renamed[paths[0]] = paths[1]
+    return renamed
+
+
 def area_of(path: str) -> str:
     for key, _, pattern in AREAS:
         if re.search(pattern, path):
@@ -97,6 +109,7 @@ def measure(base: str, head: str) -> dict[str, object]:
         }
         for key, label, _ in AREAS
     }
+    renamed = current_names(head)
     modified_upstream_files = []
     added_files = []
     for line in git("diff", "--no-renames", "--numstat", base, head).splitlines():
@@ -111,10 +124,10 @@ def measure(base: str, head: str) -> dict[str, object]:
         entry["lines_deleted"] += int(deleted)
         if code == "M":
             modified_upstream_files.append(
-                {"path": path, "lines_added": int(added), "lines_deleted": int(deleted)}
+                {"path": renamed.get(path, path), "lines_added": int(added), "lines_deleted": int(deleted)}
             )
         elif code == "A":
-            added_files.append({"path": path, "lines": int(added)})
+            added_files.append({"path": renamed.get(path, path), "lines": int(added)})
     modified_upstream_files.sort(key=lambda item: (-item["lines_added"], item["path"]))
     added_files.sort(key=lambda item: (-item["lines"], item["path"]))
 

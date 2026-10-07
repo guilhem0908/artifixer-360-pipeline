@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build ArtiFixer windows with all angular views grouped by source position.
 
-The prepared Gauvain trajectory is stored as long, view-major lanes.  This
+The prepared clip A trajectory is stored as long, view-major lanes.  This
 manifest presents it to the video model position-first instead: the fourteen
 views at one camera centre are consecutive, the angular order reverses at the
 next centre, and every inference item contains complete position groups only.
@@ -138,7 +138,7 @@ def build_manifest(
     )
     return {
         "schema_version": 1,
-        "layout": "gauvain_position_first_14view_snake_windows",
+        "layout": "clip_a_position_first_14view_snake_windows",
         "frame_count": frame_count,
         "views_per_position": views_per_position,
         "target_count": len(expected_ids),

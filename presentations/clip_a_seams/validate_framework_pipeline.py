@@ -14,9 +14,9 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 
 ROOT = Path(__file__).resolve().parent
-PPTX = ROOT / "Gauvain_Framework_Pipeline_Current_Editable.pptx"
-PREVIEW = ROOT / "Gauvain_Framework_Pipeline_Current_Editable_preview.png"
-CONTACT = ROOT / "Gauvain_Framework_Pipeline_Current_Editable_contact_sheet.png"
+PPTX = ROOT / "Clip_A_Framework_Pipeline_Current_Editable.pptx"
+PREVIEW = ROOT / "Clip_A_Framework_Pipeline_Current_Editable_preview.png"
+CONTACT = ROOT / "Clip_A_Framework_Pipeline_Current_Editable_contact_sheet.png"
 
 EXPECTED_FLOW_OBJECTS = {
     "Paper input pinhole video frame",

@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -N gauvain-snake14-prep
+#PBS -N clip-a-snake14-prep
 #PBS -l rt_QG=1
 #PBS -l walltime=06:00:00
 #PBS -j oe
@@ -9,12 +9,12 @@ set -euo pipefail
 : "${AFROOT:?Set AFROOT to the ArtiFixer ABCI root}"
 REPO="$AFROOT/src/ArtiFixer"
 SIF="$AFROOT/models/artifixer-cuda12.sif"
-SOURCE_ID=gauvain_colmap_fixed_v2
+SOURCE_ID=clip_a_colmap_fixed_v2
 SOURCE="$AFROOT/data/$SOURCE_ID"
 SOURCE_TRANSFORMS="$SOURCE/3dgrut_input/$SOURCE_ID/nerfstudio/transforms.json"
 SOURCE_CAPTION="$SOURCE/captions/$SOURCE_ID/caption.h5"
 SOURCE_CHECKPOINT="$SOURCE/artifixer3d/runs/$SOURCE_ID/$SOURCE_ID/ours_30000/ckpt_30000.pt"
-SCENE_ID=gauvain_wlsnake14_full154_v1
+SCENE_ID=clip_a_wlsnake14_full154_v1
 SCENE="$AFROOT/data/$SCENE_ID"
 TRAJECTORY_DIR="$AFROOT/trajectories/$SCENE_ID"
 TRAJECTORY="$TRAJECTORY_DIR/snake.json"

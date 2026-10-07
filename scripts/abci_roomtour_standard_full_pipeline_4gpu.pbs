@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -N bearlake-full-360
+#PBS -N roomtour-full-360
 #PBS -l rt_QF=1
 #PBS -l walltime=12:00:00
 #PBS -j oe
@@ -50,8 +50,8 @@ PUBLISH_STAGE="$JOB_DIR/.publish"
 PUBLISHED="$JOB_DIR/published"
 SCRATCH="$PBS_LOCALDIR/roomtour_full_$JOB_TOKEN"
 RUN_REPO="$SCRATCH/repo"
-BASE_ID=${BASE_ID:-bearlake_base${SOURCE_COUNT}_dense_standard_v2}
-SNAKE_ID=${SNAKE_ID:-bearlake_snake14_${SOURCE_COUNT}_dense_standard_v2}
+BASE_ID=${BASE_ID:-roomtour_base${SOURCE_COUNT}_dense_standard_v2}
+SNAKE_ID=${SNAKE_ID:-roomtour_snake14_${SOURCE_COUNT}_dense_standard_v2}
 RIG_TARGET_COUNT=$((14 * SOURCE_COUNT))
 SNAKE_TURN_COUNT=154
 SNAKE_TARGET_COUNT=$((RIG_TARGET_COUNT + SNAKE_TURN_COUNT))
