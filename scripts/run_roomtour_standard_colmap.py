@@ -15,12 +15,19 @@ import json
 import math
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
 
-from scripts.run_erp_benchmark_colmap import (
+# Make `python scripts/<name>.py` work on a plain clone: the repository root must
+# be importable for the `scripts.*` / `model_eval.*` imports below.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.run_erp_benchmark_colmap import (  # noqa: E402
     Commands,
     GeometryError,
     _array,

@@ -28,6 +28,7 @@ tests/test_report_upstream_delta.py
 tests/test_reported_results.py
 tests/test_run_erp_benchmark_colmap.py
 tests/test_run_roomtour_standard_colmap.py
+tests/test_scripts_run_from_plain_clone.py
 tests/test_stitch_artifixer_frustums360.py
 tests/test_stitch_artifixer_frustums360_seams.py
 tests/test_synchronized_multiview.py

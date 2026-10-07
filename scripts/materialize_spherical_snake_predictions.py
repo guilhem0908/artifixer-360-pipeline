@@ -9,9 +9,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
-from scripts.extract_spherical_snake_lanes import prediction_index
+# Make `python scripts/<name>.py` work on a plain clone: the repository root must
+# be importable for the `scripts.*` / `model_eval.*` imports below.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.extract_spherical_snake_lanes import prediction_index  # noqa: E402
 
 
 def materialize(
