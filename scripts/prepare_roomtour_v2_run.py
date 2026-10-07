@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-count", type=int, default=150)
     parser.add_argument(
         "--scene-id",
-        default="bearlake_bzedjtnhmh0",
+        required=True,
         help="Stable scene identifier recorded in the source contract.",
     )
     return parser.parse_args()
