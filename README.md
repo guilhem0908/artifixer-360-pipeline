@@ -27,10 +27,21 @@ Derivative of [NVIDIA ArtiFixer](https://github.com/nv-tlabs/ArtiFixer) (Apache-
 
 *Left: raw 3DGRUT render of the reconstructed scene, projected to ERP. Right: the
 same 154 frames and camera path after the first ArtiFixer3D+ run (labelled 451k).
+This is an early run on clip A (the 154-frame clip, see Footage below): it is
+neither the 117-frame reference run that passed the quality gates nor the later
+fourteen-direction run that failed them, and no gate verdict is recorded for it.
 Most holes and splatting noise are removed; residual warping and duplicated
 structures remain, and regions the camera never saw are generated, not observed.
-Click for the [full-resolution MP4](docs/assets/readme/clip_a_154f_3DGRUT-raw-ERP_vs_ArtiFixer3Dplus-451k.mp4)
+Click for the
+[full-resolution MP4](docs/assets/readme/clip_a_154f_3DGRUT-raw-ERP_vs_ArtiFixer3Dplus-451k.mp4)
 (2048 x 512, 10 s).*
+
+**Footage.** The two indoor clips behind every result here, clip A (154 frames, shown
+above) and clip B (117 frames, the reference run), are third-party video that I did
+not film. They are not included in this repository: each image or video on this page
+is a 3D Gaussian render or a model output derived from them, shown only to illustrate
+research results. The repository does not record the original source or licence of
+either clip.
 
 > **Research status.** The recipes are documented and the tooling is tested, but
 > the method does not guarantee panoramas without visible seams or with correct
@@ -122,8 +133,10 @@ The editable framework diagram used during the internship is kept in the
 
 ## Results
 
-All values except the rig coverage come from GPU runs made during the internship
-and are transcribed from the dated records under `docs/`. The raw QC reports
+Most values come from GPU runs made during the internship and are transcribed from
+the dated records under `docs/`. The exceptions are the rig coverage and the 12.06%
+field-of-view share, which this repository recomputes, and the Splatfacto row, an
+earlier baseline that is not part of this pipeline. The raw QC reports
 stayed on the cluster, so they cannot be recomputed from this repository; the
 test suite only checks that the README, [docs/results/reported_metrics.json](docs/results/reported_metrics.json)
 and the source records agree. Lower is better unless stated otherwise.
@@ -132,10 +145,10 @@ and the source records agree. Lower is better unless stated otherwise.
 |---|---|---|---|
 | Cross-view depth-overlap MAE of the repaired views, **before distillation**, without → with depth-aware synchronisation | 0.03396 → 0.02471 (27.25% lower) | Positive, limited scope: measured on the repaired pseudo-views, including the `H300 ↔ H000` closure pair | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
 | Same change **after distillation**, final ERP: first 451k run vs depth + loop variant | temporal warp MAE 0.02329 vs 0.02582; seam MAE 0.01143 vs 0.01174 | **Negative.** The pseudo-view gain did not clearly survive distillation | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
-| 117-frame reference run, 14 views (1,638 renders at 768 x 768): optical-flow temporal warp MAE, raw renders → output (median) | 0.03732 → 0.02016; edge flicker 0.03422 → 0.01627 | Positive. Verdict `PASS_FORWARD14_DEPTHPEER77_PILOT`, final job wall-clock 00:20:21 on one 4-GPU node | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
+| 117-frame reference run, 14 views (1,638 renders at 768 x 768): optical-flow temporal warp MAE, raw renders → output (median) | 0.03732 → 0.02016; edge flicker 0.03422 → 0.01627 | Positive, with a caveat: temporal warp MAE falls with any smoothing, so read it together with the edge-strength row below. Verdict `PASS_FORWARD14_DEPTHPEER77_PILOT`, final job wall-clock 00:20:21 on one 4-GPU node | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
 | Same run: edge strength kept in high-confidence regions (1 = fully kept) | 0.4859 median, 0.3653 for the weakest view | Caveat: part of the stability comes with softer detail; weakly observed lateral areas stay soft or smeared | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
 | Same run: COLMAP pose reconstruction | 117/117 images registered, 24,933 points, median reprojection error about 0.952 px | Context | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
-| Optional two-yaw VEnhancer post-process on that output: temporal warp MAE, edge flicker | 0.02020 → 0.01339 (-33.7%); 0.01627 → 0.01009 (-38.0%) | Perceptual smoothing only; it can reinterpret weak texture and validates no geometry | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
+| Optional two-yaw VEnhancer post-process on that output: temporal warp MAE, edge flicker | 0.02020 → 0.01339 (-33.7%); 0.01627 → 0.01009 (-38.0%) | Perceptual smoothing only: a lower warp MAE is what smoothing does by itself; it can reinterpret weak texture and validates no geometry | [handover](docs/artifixer_abci_handover_2026-08-20.md) |
 | Repairing six cubemap faces independently: mean seam-failure fraction over the 12 face adjacencies (fails above 0.1), raw → repaired | 0.3420 (11/12 failing) → 0.8328 (12/12 failing) | **Negative.** Cleaning each face made the seams much worse | [NO-GO report](docs/clip_a_artifixer_no_go_2026-07-22.md) |
 | Geometry-locked 3D variant, same seam metric | 0.0000 (0/12 failing) | Consistent only because geometry cannot move: the geometric artifacts stay | [NO-GO report](docs/clip_a_artifixer_no_go_2026-07-22.md) |
 | Full 154-frame, fourteen-direction run (2,156 perspective views, 1024 x 512 ERP) | `PASS_FULL_SPHERICAL_COVERAGE`, then `QC_FAIL_VISUAL_AND_TEMPORAL`: circular seam 7.65x local contrast; max temporal warp MAE 0.1298 (threshold 0.10); max temporal p95 0.4196 (threshold 0.30); max black fraction 3.77% | **Negative.** Complete coverage and exact source-pixel reinsertion, but the output failed the acceptance gates, which led to a geometry-first redesign | [progress report](docs/weekly_progress/2026-08-09.md) |
@@ -198,8 +211,8 @@ Key files:
 
 | File | Role | Size |
 |---|---|---|
-| [`model_eval/synchronized_multiview.py`](model_eval/synchronized_multiview.py) | Same-centre reprojection grids, depth- and opacity-filtered view graph, loop validation, latent and noise consensus | new, 573 lines |
-| [`model_eval/run_synchronized_multiview_inference.py`](model_eval/run_synchronized_multiview_inference.py) | Joint 14-view denoising loop: per-view encoding, micro-batched transformer calls, consensus before the scheduler step, raised-cosine merge of temporal windows | new, 1,176 lines |
+| [`model_eval/synchronized_multiview.py`](model_eval/synchronized_multiview.py) | Same-centre reprojection grids, depth- and opacity-filtered view graph, loop validation, latent and noise consensus | new, 574 lines |
+| [`model_eval/run_synchronized_multiview_inference.py`](model_eval/run_synchronized_multiview_inference.py) | Joint 14-view denoising loop: per-view encoding, micro-batched transformer calls, consensus before the scheduler step, raised-cosine merge of temporal windows | new, 1,177 lines |
 | [`scripts/generate_spherical_snake_trajectory.py`](scripts/generate_spherical_snake_trajectory.py) | Continuous snake over the sphere with alternating lanes and a bounded angular step | new, 331 lines |
 | [`scripts/stitch_artifixer_frustums360.py`](scripts/stitch_artifixer_frustums360.py) | Frustum-to-ERP projection, angular ownership, feather / multiband / graph-cut seams, exposure gains | new, 676 lines |
 | [`scripts/panorama_metrics.py`](scripts/panorama_metrics.py) | ERP wrap-seam and optical-flow temporal metrics used by the quality gates | new, 149 lines |
@@ -313,8 +326,8 @@ Supporting documents:
 - [Dated handover](docs/artifixer_abci_handover_2026-08-20.md): the exact 117-frame
   protocol, runtime pins, off-trajectory findings and failure modes.
 
-No source video, dataset, full generated sequence, checkpoint, credential or
-cluster-specific path is included in the repository; examples use environment
+The current tree includes no source video, dataset, full generated sequence,
+checkpoint, credential or cluster-specific path; examples use environment
 variables and `/path/to/...` placeholders.
 
 ## Evaluation metrics
@@ -362,9 +375,9 @@ thirdparty/        the linked 3DGRUT-ArtiFixer-360 submodule
   diagnostic experiment, but the following 3D distillation did not consistently
   preserve that improvement in the final ERP.
 - Hidden regions remain generative hypotheses, not captured photographic truth.
-- The quantitative evidence is limited to two indoor clips (154 and 117 frames)
-  and a small number of runs; no ground-truth panoramas were available, so all panorama metrics are
-  reference-free.
+- The quantitative evidence is limited to two indoor clips (clip A, 154 frames, and
+  clip B, 117 frames) and a small number of runs; no ground-truth panoramas were
+  available, so all panorama metrics are reference-free.
 - The reference job scripts are tied to one cluster layout and to a 117-frame
   clip; adapting them to another length needs code and test changes.
 
@@ -395,8 +408,9 @@ copyright and SPDX notices. The modifications are summarised in
 [MODIFICATIONS.md](MODIFICATIONS.md) and itemised file by file in
 [docs/results/upstream_delta.json](docs/results/upstream_delta.json). The project is distributed under Apache-2.0;
 see [LICENSE](LICENSE), [NOTICE](NOTICE) and
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). It also relies on COLMAP,
-3DGRUT, MoGe, the Wan 2.1 video model, OpenCV and PyTorch.
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). It also relies on COLMAP
+(with ALIKED features and the LightGlue matcher), 3DGRUT, MoGe, the Wan 2.1 video
+model, VEnhancer (optional post-process), OpenCV and PyTorch.
 
 Please cite the original ArtiFixer work:
 
