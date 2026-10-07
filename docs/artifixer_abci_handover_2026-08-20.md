@@ -152,10 +152,11 @@ The complete handover is split across these two repositories:
 ArtiFixer 360 base release: 7e271037bd00a9091f8f2572ad3e06b69f40a205
 3DGRUT-ArtiFixer-360: decee83591594d5812c30e01fa445f15560d21f3
 main repository: https://github.com/guilhem0908/artifixer-360-pipeline
-3DGRUT fork: https://github.com/guilhem0908/3DGRUT-ArtiFixer-360
+3DGRUT fork (private repository): https://github.com/guilhem0908/3DGRUT-ArtiFixer-360
 ```
 
-Clone the main repository with `--recurse-submodules`; its submodule is pinned
+Clone the main repository with `--recurse-submodules` (this needs access to the
+private 3DGRUT fork); its submodule is pinned
 to the canonical 3DGRUT fork commit above. The historical overlay inventory is
 kept in `docs/artifixer_handover_overlay_files.txt` for audit purposes, but a
 fresh recursive clone does not require extracting that overlay.

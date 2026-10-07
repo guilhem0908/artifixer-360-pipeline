@@ -110,9 +110,9 @@ with ArtiFixer); orange boxes were added or extended in this repository.
 4. **Distillation.** Repaired views are distilled back into the shared scene with
    optional locks (positions, rotations, scales and densities frozen) and depth,
    colour-loop and single-surface losses; a bitwise audit checks that locked
-   tensors did not move. The trainer-side controls live in the
-   [3DGRUT-ArtiFixer-360](https://github.com/guilhem0908/3DGRUT-ArtiFixer-360)
-   submodule.
+   tensors did not move. The trainer-side controls are in a patch to NVIDIA's
+   3DGRUT-ArtiFixer that lives in a private fork (see
+   [Running the full pipeline](#running-the-full-pipeline)).
 5. **Panorama.** Perspective frusta are projected to ERP with angular ownership,
    feather, multiband or graph-cut seams, exposure gain solving and temporal label
    smoothing.
@@ -203,9 +203,10 @@ between the upstream base and the last internship commit; the full report is
 | Top-level notices, README and configuration | 3 | 5 | 229 | 478 |
 | **Total** | **121** | **24** | **23,602** | **630** |
 
-The tests row covers 32 new test modules holding 119 test functions. The companion
-patch in the 3DGRUT submodule is +506 / −74 lines in 12 files on
-`nv-tlabs/3DGRUT-ArtiFixer@62e1038`.
+The tests row covers 32 new test modules holding 119 test functions. The table
+counts this repository only. The companion patch to 3DGRUT, +506 / −74 lines in 12
+files on NVIDIA's public `nv-tlabs/3DGRUT-ArtiFixer@62e1038`, lives in a private
+fork, `guilhem0908/3DGRUT-ArtiFixer-360`, which visitors cannot read.
 
 Key files:
 
@@ -241,7 +242,7 @@ housekeeping commits (this README, the CPU test workflow, the figures) carry a
 ## Quickstart on a CPU
 
 This runs the tooling that needs neither a GPU, nor the checkpoint, nor the
-submodule. A plain clone is enough.
+private 3DGRUT submodule. A plain clone is enough.
 
 ```bash
 git clone https://github.com/guilhem0908/artifixer-360-pipeline.git
@@ -265,7 +266,12 @@ looping preview at the top of this page from the versioned MP4.
 These steps need the GPU environment described above. They were run on the
 cluster during the internship and have not been re-run since.
 
-Clone recursively, because the 3DGRUT fork holds the distillation changes:
+The 3DGRUT-side patch, which holds the distillation changes, lives in a private fork,
+`guilhem0908/3DGRUT-ArtiFixer-360`, linked as the `thirdparty/3DGRUT-ArtiFixer`
+submodule. A recursive clone therefore needs access to that fork: without it the
+submodule step fails, and the container build below, which installs 3DGRUT from
+`thirdparty/`, cannot work. A plain clone, as in the CPU quickstart above, does not
+need it. With access, clone recursively:
 
 ```bash
 git clone --recurse-submodules \
@@ -361,7 +367,7 @@ configs/           portable environment template
 docs/              pipeline guides, dated records, progress archive, results
 presentations/     framework diagram generator and its validators
 tests/             unit tests; tests/cpu_subset.txt lists the CPU-only subset
-thirdparty/        the linked 3DGRUT-ArtiFixer-360 submodule
+thirdparty/        submodule entry for the private 3DGRUT-ArtiFixer-360 fork
 ```
 
 ## Limitations
@@ -396,9 +402,9 @@ The internship covered more than this stage:
   interface prepared to run a visual navigation model on the Kachaka mobile robot
   (image relay, command safety, dry-run mode). The model inference is not wired in
   and no navigation run on the real robot was completed.
-- [3DGRUT-ArtiFixer-360](https://github.com/guilhem0908/3DGRUT-ArtiFixer-360):
-  NVIDIA's 3DGRUT-ArtiFixer plus the distillation controls used here, consumed as
-  the `thirdparty/3DGRUT-ArtiFixer` submodule.
+- `guilhem0908/3DGRUT-ArtiFixer-360` (private repository, so no link): NVIDIA's
+  public 3DGRUT-ArtiFixer plus the distillation controls used here, consumed as
+  the `thirdparty/3DGRUT-ArtiFixer` submodule. Cloning it needs access.
 
 ## Upstream attribution and license
 

@@ -14,6 +14,7 @@ The 360° research extension adds or changes:
 - panorama-specific quantitative diagnostics;
 - documentation and handover utilities.
 
-The linked `3DGRUT-ArtiFixer-360` submodule contains the corresponding 3DGRUT
-changes. Original NVIDIA notices remain in modified upstream files. Git history
+The corresponding 3DGRUT changes are in `3DGRUT-ArtiFixer-360`, a private fork of
+NVIDIA's `nv-tlabs/3DGRUT-ArtiFixer` linked as a submodule; cloning it needs access
+to that fork. Original NVIDIA notices remain in modified upstream files. Git history
 and this document identify the derivative modifications.

@@ -18,6 +18,11 @@ python scripts/validate_artifixer360_install.py
 The validator must report the 3DGRUT submodule, Python entry points and system
 tools. A missing model checkpoint is a warning unless `--checkpoint` is given.
 
+The 3DGRUT submodule is a private fork, `guilhem0908/3DGRUT-ArtiFixer-360`, so
+`--recurse-submodules` needs access to it. Without access the submodule step of the
+clone fails, the validator fails on the missing 3DGRUT files, and the steps below
+that use 3DGRUT cannot be run.
+
 ## 2. Build the environment
 
 Use `Dockerfile.cuda12` on the current ABCI CUDA-12 nodes. Mount the repository,
